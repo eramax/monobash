@@ -36,7 +36,20 @@ pub fn init(alloc: std.mem.Allocator) void {
 pub fn exec(io: std.Io, tree: *const parser.TreeType, src: []const u8) u8 {
     const node = parser.rootNode(tree);
 
-    if (parser.nodeHasError(node)) {
+    // Only reject top-level ERROR nodes (;;), but execute through
+    // descendant errors from tree-sitter limitations
+    var has_direct_error = false;
+    if (std.mem.eql(u8, parser.getNodeName(node), "program")) {
+        const count = parser.childCount(node);
+        for (0..count) |i| {
+            const child = parser.childAt(node, i);
+            if (std.mem.eql(u8, parser.getNodeName(child), "ERROR")) {
+                has_direct_error = true;
+                break;
+            }
+        }
+    }
+    if (has_direct_error) {
         const msg = "bash: syntax error near unexpected token\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 2;
@@ -123,7 +136,8 @@ fn execNodeInner(io: std.Io, node: NodeType, source: []const u8) u8 {
         return execTest(io, node, source);
     }
     if (std.mem.eql(u8, name, "declaration_command")) {
-        return execDeclaration(io, node, source);
+        const r = execDeclaration(io, node, source);
+        return r;
     }
     if (std.mem.eql(u8, name, "variable_assignment")) {
         return execVarAssign(io, node, source);
@@ -142,6 +156,9 @@ fn execNodeInner(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
     if (std.mem.eql(u8, name, "do_group")) {
         return execCompound(io, node, source);
+    }
+    if (std.mem.eql(u8, name, "variable_assignments")) {
+        return execVarAssignments(io, node, source);
     }
 
     return 0;
@@ -263,29 +280,56 @@ fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
 
 fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     const count = parser.childCount(node);
+    if (count == 0) return 0;
 
-    // Check if first child is simple_command or has command_name/word children
-    if (count > 0) {
-        const first = parser.childAt(node, 0);
-        const firstName = nodeName(first);
-        if (std.mem.eql(u8, firstName, "simple_command")) {
-            return execSimpleCommand(io, first, source);
-        }
-        if (std.mem.eql(u8, firstName, "command_name") or std.mem.eql(u8, firstName, "word")) {
-            return execSimpleCommand(io, node, source);
-        }
-        if (std.mem.eql(u8, firstName, "variable_assignment")) {
-            return execSimpleCommand(io, node, source);
-        }
-    }
-
-    // Redirected, compound, if, for, etc. — recurse into children
-    var last: u8 = 0;
-    for (0..count) |i| {
+    // Collect redirect siblings if any
+    var redirects: std.ArrayListAligned(Redirect, null) = .empty;
+    defer redirects.deinit(allocator);
+    for (1..count) |i| {
         const child = parser.childAt(node, i);
-        last = execNode(io, child, source);
+        if (std.mem.eql(u8, nodeName(child), "file_redirect")) {
+            if (parseFileRedirect(child, source)) |r| {
+                redirects.append(allocator, r) catch @panic("oom");
+            }
+        }
     }
-    return last;
+
+    const has_redirects = redirects.items.len > 0;
+    var saved_out: c_int = -1;
+    var saved_err: c_int = -1;
+    if (has_redirects) {
+        saved_out = c.dup(1);
+        saved_err = c.dup(2);
+        _ = applyRedirects(redirects.items);
+    }
+
+    const first = parser.childAt(node, 0);
+    const firstName = nodeName(first);
+
+    var status: u8 = 0;
+    if (std.mem.eql(u8, firstName, "simple_command")) {
+        status = execSimpleCommand(io, first, source);
+    } else if (std.mem.eql(u8, firstName, "command_name") or std.mem.eql(u8, firstName, "word")) {
+        status = execSimpleCommand(io, node, source);
+    } else if (std.mem.eql(u8, firstName, "variable_assignment")) {
+        status = execSimpleCommand(io, node, source);
+    } else {
+        var last: u8 = 0;
+        for (0..count) |i| {
+            const child = parser.childAt(node, i);
+            const cname = nodeName(child);
+            if (std.mem.eql(u8, cname, "file_redirect")) continue;
+            last = execNode(io, child, source);
+        }
+        status = last;
+    }
+
+    if (has_redirects) {
+        if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+        if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+    }
+
+    return status;
 }
 
 fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -524,7 +568,10 @@ fn execExternal(cmd: []const u8, args: [][]const u8) u8 {
         const cmd_z = allocator.dupeZ(u8, cmd) catch @panic("oom");
         _ = c.execvp(cmd_z.ptr, argv.ptr);
 
-        // If execvp returns, it failed
+        // If execvp returns, write "command not found" to stderr
+        var cerr_buf: [4096]u8 = undefined;
+        const cerr_msg = std.fmt.bufPrint(&cerr_buf, "bash: line 1: {s}: command not found\n", .{cmd}) catch "command not found\n";
+        _ = c.write(2, cerr_msg.ptr, cerr_msg.len);
         c._exit(127);
     }
 
@@ -661,17 +708,18 @@ fn execFor(io: std.Io, node: NodeType, source: []const u8) u8 {
 
     var last_status: u8 = 0;
     if (is_select) {
-        // Basic select: present menu and iterate
-        const stdout = std.Io.File.stdout();
-        for (words.items, 0..) |w, idx| {
-            var buf: [128]u8 = undefined;
-            const line = std.fmt.bufPrint(&buf, "{d}) {s}\n", .{idx + 1, w}) catch continue;
-            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
-        }
-        // Use first word by default (no interactive input in non-interactive mode)
-        if (words.items.len > 0) {
-            _ = var_store.setLocal(var_name, words.items[0], false);
-            last_status = execNode(io, body, source);
+        const is_tty = c.isatty(0) != 0;
+        if (is_tty) {
+            const stdout = std.Io.File.stdout();
+            for (words.items, 0..) |w, idx| {
+                var buf: [128]u8 = undefined;
+                const line = std.fmt.bufPrint(&buf, "{d}) {s}\n", .{idx + 1, w}) catch continue;
+                _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+            }
+            if (words.items.len > 0) {
+                _ = var_store.setLocal(var_name, words.items[0], false);
+                last_status = execNode(io, body, source);
+            }
         }
     } else {
         for (words.items) |w| {
@@ -922,7 +970,6 @@ fn execPipeline(io: std.Io, node: NodeType, source: []const u8) u8 {
 const Redirect = struct { op: []const u8, target: []const u8 };
 
 fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
-    // Collect redirects from siblings
     const count = parser.childCount(node);
     if (count == 0) return 0;
     const cmd_node = parser.childAt(node, 0);
@@ -964,7 +1011,9 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
 
 fn parseFileRedirect(node: NodeType, source: []const u8) ?Redirect {
     const total = parser.childCount(node);
-    if (total < 2) return null;
+    if (total < 2) {
+        return null;
+    }
 
     var op_text: ?[]const u8 = null;
     var target_text: ?[]const u8 = null;
@@ -979,14 +1028,32 @@ fn parseFileRedirect(node: NodeType, source: []const u8) ?Redirect {
             source_fd = text;
         } else if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "string")) {
             target_text = text;
-        } else if (cname.len == 0) {
-            // unnamed token = operator
-            op_text = text;
+        } else if (cname.len == 0 or text[0] == '>' or text[0] == '<') {
+            if (op_text == null) {
+                op_text = text;
+            }
         }
     }
 
-    const target = target_text orelse return null;
     const op = op_text orelse return null;
+
+    // Handle >&- and >| operators where target is embedded in operator
+    if (std.mem.endsWith(u8, op, ">&-") or std.mem.endsWith(u8, op, ">-") or std.mem.endsWith(u8, op, ">|")) {
+        const close_op = if (std.mem.endsWith(u8, op, ">&-") or std.mem.endsWith(u8, op, ">-")) ">&" else ">|";
+        if (source_fd) |fd| {
+            var buf: [32]u8 = undefined;
+            const combined = std.fmt.bufPrint(&buf, "{s}{s}", .{ fd, close_op }) catch {
+                return .{ .op = op, .target = "-" };
+            };
+            const dup = allocator.dupe(u8, combined) catch {
+                return .{ .op = op, .target = "-" };
+            };
+            return .{ .op = dup, .target = "-" };
+        }
+        return .{ .op = close_op, .target = "-" };
+    }
+
+    const target = target_text orelse return null;
 
     // If source fd exists (e.g., "2" for "2>&1"), prepend it to op
     if (source_fd) |fd| {
@@ -1054,7 +1121,9 @@ fn applyRedirects(redirects: []const Redirect) u8 {
                 std.fmt.parseInt(c_int, prefix, 10) catch 1
             else
                 1;
-            if (std.fmt.parseInt(c_int, r.target, 10)) |fd| {
+            if (std.mem.eql(u8, r.target, "-")) {
+                _ = c.close(source_fd);
+            } else if (std.fmt.parseInt(c_int, r.target, 10)) |fd| {
                 _ = c.dup2(fd, source_fd);
             } else |_| {
                 const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
@@ -1109,6 +1178,10 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
                 return 2;
             }
             if (isTerminator(cname)) {
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, cname, "{") or std.mem.eql(u8, cname, "}")) {
                 i += 1;
                 continue;
             }
@@ -1515,6 +1588,55 @@ fn expandBareVars(alloc: std.mem.Allocator, s: []const u8) []const u8 {
     return result.toOwnedSlice(alloc) catch @panic("oom");
 }
 
+fn hasIntegerAttr(name: []const u8) bool {
+    const r = var_store.hasIntVar(name);
+    return r;
+}
+
+pub fn resolveIntExpr(alloc: std.mem.Allocator, expr: []const u8) ?i64 {
+    var result_buf: [4096]u8 = undefined;
+    var pos: usize = 0;
+    var i: usize = 0;
+    while (i < expr.len and pos < result_buf.len) {
+        if (std.ascii.isAlphabetic(expr[i]) or expr[i] == '_') {
+            const start = i;
+            while (i < expr.len and (std.ascii.isAlphanumeric(expr[i]) or expr[i] == '_')) {
+                i += 1;
+            }
+            const vname = expr[start..i];
+            if (var_store.get(vname)) |v| {
+                const to_copy = @min(v.value.len, result_buf.len - pos);
+                @memcpy(result_buf[pos..][0..to_copy], v.value[0..to_copy]);
+                pos += to_copy;
+            } else {
+                result_buf[pos] = '0';
+                pos += 1;
+            }
+        } else {
+            result_buf[pos] = expr[i];
+            pos += 1;
+            i += 1;
+        }
+    }
+    const resolved = result_buf[0..pos];
+    var full_buf: [4096]u8 = undefined;
+    if (resolved.len + 7 > full_buf.len) return null;
+    full_buf[0] = '$';
+    full_buf[1] = '(';
+    full_buf[2] = '(';
+    @memcpy(full_buf[3..][0..resolved.len], resolved);
+    full_buf[3 + resolved.len] = ')';
+    full_buf[4 + resolved.len] = ')';
+    const full = full_buf[0 .. 5 + resolved.len];
+    if (expand.expandToken(alloc, full)) |res| {
+        defer res.deinit();
+        if (res.words.len > 0) {
+            return std.fmt.parseInt(i64, res.words[0], 10) catch null;
+        }
+    } else |_| {}
+    return null;
+}
+
 fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
     _ = io;
     const text = nodeText(node, source);
@@ -1593,6 +1715,16 @@ fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
     }
     return 0;
+}
+
+fn execVarAssignments(io: std.Io, node: NodeType, source: []const u8) u8 {
+    var last: u8 = 0;
+    const count = parser.childCount(node);
+    for (0..count) |i| {
+        const child = parser.childAt(node, i);
+        last = execNode(io, child, source);
+    }
+    return last;
 }
 
 fn execExport(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -1888,9 +2020,73 @@ fn execFnDef(io: std.Io, node: NodeType, source: []const u8) u8 {
 
 fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
+    // Scan for flags (-i, -r, -x, -a, -A) among the words
+    var flags: u32 = 0;
     const count = parser.childCount(node);
     for (0..count) |i| {
         const child = parser.childAt(node, i);
+        const cname = nodeName(child);
+        if (std.mem.eql(u8, cname, "word")) {
+            const raw = nodeText(child, source);
+            if (raw.len > 0 and raw[0] == '-') {
+                for (raw[1..]) |ch| {
+                    switch (ch) {
+                        'i' => flags |= 4,
+                        'r' => flags |= 8,
+                        'x' => flags |= 16,
+                        'a' => flags |= 1,
+                        'A' => flags |= 2,
+                        else => {},
+                    }
+                }
+            }
+        }
+    }
+    // When -i flag is set, process variable assignments with integer evaluation
+    if (flags & 4 != 0) {
+        for (0..count) |i| {
+            const child = parser.childAt(node, i);
+            const cname = nodeName(child);
+            if (std.mem.eql(u8, cname, "variable_assignment")) {
+                const txt = nodeText(child, source);
+                if (std.mem.indexOfScalar(u8, txt, '=')) |eq| {
+                    const name = txt[0..eq];
+                    const value = txt[eq+1..];
+                    if (resolveIntExpr(allocator, value)) |v| {
+                        var vbuf: [32]u8 = undefined;
+                        const vstr = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch value;
+                        _ = var_store.setLocal(name, vstr, false);
+                        var_store.setIntVar(name, true);
+                    } else {
+                        _ = var_store.setLocal(name, value, false);
+                        var_store.setIntVar(name, true);
+                    }
+                } else {
+                    var_store.setIntVar(txt, true);
+                }
+            }
+        }
+        return 0;
+    }
+    for (0..count) |i| {
+        const child = parser.childAt(node, i);
+        const cname = nodeName(child);
+        if (std.mem.eql(u8, cname, "word") and flags == 0) {
+            var words: std.ArrayListAligned([]const u8, null) = .empty;
+            defer words.deinit(allocator);
+            for (0..count) |j| {
+                const c2 = parser.childAt(node, j);
+                const c2name = nodeName(c2);
+                if (std.mem.eql(u8, c2name, "variable_assignment") or std.mem.eql(u8, c2name, "word")) {
+                    const raw2 = nodeText(c2, source);
+                    const dup2 = allocator.dupe(u8, raw2) catch @panic("oom");
+                    words.append(allocator, dup2) catch @panic("oom");
+                }
+            }
+            if (words.items.len > 0) {
+                return builtins.run(io, words.items[0], words.items);
+            }
+        }
         last = execNode(io, child, source);
     }
     return last;
@@ -1899,6 +2095,7 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
 fn execUnset(io: std.Io, node: NodeType, source: []const u8) u8 {
     _ = io;
     const count = parser.childCount(node);
+    var is_func = false;
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
@@ -1912,7 +2109,19 @@ fn execUnset(io: std.Io, node: NodeType, source: []const u8) u8 {
         if (is_skip) continue;
 
         const raw = nodeText(child, source);
-        var_store.unset(raw);
+        if (std.mem.eql(u8, raw, "-f")) {
+            is_func = true;
+        } else if (std.mem.eql(u8, raw, "-v")) {
+            // -v: unset variable (default)
+            is_func = false;
+        } else if (raw.len > 0 and raw[0] == '-') {
+            // Other flag, skip
+            continue;
+        } else if (is_func) {
+            _ = functions.remove(raw);
+        } else {
+            var_store.unset(raw);
+        }
     }
     return 0;
 }

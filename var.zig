@@ -36,6 +36,7 @@ pub fn init(allocator: std.mem.Allocator) void {
     alias_table = std.StringHashMap([]const u8).init(arena);
     dir_stack = std.ArrayListAligned([]const u8, null).empty;
     readonly_set = std.StringHashMap(void).init(arena);
+    int_vars = std.StringHashMap(void).init(arena);
 
     // Initialize directory stack with PWD
     var cwd_buf: [4096]u8 = undefined;
@@ -104,12 +105,21 @@ pub fn init(allocator: std.mem.Allocator) void {
     _ = set("SHLVL", shlvl_str, false);
 
     // Static / initial values
-    _ = set("LINENO", "0", false);
+    _ = set("LINENO", "1", false);
 
     // EPOCHSECONDS
     var epoch_buf: [32]u8 = undefined;
     const epoch_str = std.fmt.bufPrint(&epoch_buf, "{d}", .{time(null)}) catch "0";
     _ = set("EPOCHSECONDS", epoch_str, false);
+
+    // PWD — current working directory
+    var pwd_buf: [4096]u8 = undefined;
+    if (getcwd(&pwd_buf, pwd_buf.len)) |pwd_ptr| {
+        const pwd = std.mem.sliceTo(pwd_ptr, 0);
+        _ = set("PWD", pwd, false);
+    }
+    // OLDPWD — initially unset (bash behavior)
+    _ = set("OLDPWD", "", false);
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -357,6 +367,9 @@ pub fn popDir() void {
 // Readonly tracking
 var readonly_set: std.StringHashMap(void) = undefined;
 
+// Integer attribute tracking (declare -i)
+var int_vars: std.StringHashMap(void) = undefined;
+
 pub fn setReadonly(name: []const u8, val: bool) void {
     if (val) {
         readonly_set.put(allocValue(name), {}) catch {};
@@ -367,6 +380,18 @@ pub fn setReadonly(name: []const u8, val: bool) void {
 
 pub fn isReadonly(name: []const u8) bool {
     return readonly_set.contains(name);
+}
+
+pub fn setIntVar(name: []const u8, val: bool) void {
+    if (val) {
+        int_vars.put(allocValue(name), {}) catch {};
+    } else {
+        _ = int_vars.remove(name);
+    }
+}
+
+pub fn hasIntVar(name: []const u8) bool {
+    return int_vars.contains(name);
 }
 
 // Iterator support for listing all variables
@@ -397,11 +422,11 @@ pub fn getSpecial(c: u8) []const u8 {
             var pos: usize = 0;
             if (interactive) { buf[pos] = 'i'; pos += 1; }
             buf[pos] = 'h'; pos += 1;
-            if (command_flag) { buf[pos] = 'c'; pos += 1; }
             if (errexit) { buf[pos] = 'e'; pos += 1; }
             if (nounset) { buf[pos] = 'u'; pos += 1; }
             buf[pos] = 'B'; pos += 1;
-            return global_arena.allocator().dupe(u8, buf[0..pos]) catch "hB";
+            if (command_flag) { buf[pos] = 'c'; pos += 1; }
+            return global_arena.allocator().dupe(u8, buf[0..pos]) catch "hBc";
         },
         '@' => {
             // Return positional params joined by space

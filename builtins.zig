@@ -1,6 +1,7 @@
 const std = @import("std");
 const var_store = @import("var.zig");
 const expand = @import("expand.zig");
+const executor = @import("executor.zig");
 
 const c = @cImport({
     @cInclude("sys/stat.h");
@@ -387,9 +388,17 @@ fn builtinCd(io: std.Io, args: [][]const u8) u8 {
     @memcpy(buf[0..dir.len], dir);
     buf[dir.len] = 0;
     if (chdir(buf[0..dir.len :0]) != 0) {
-        const msg = std.fmt.bufPrint(&buf, "bash: cd: {s}: No such file or directory\n", .{dir}) catch "bash: cd: error\n";
+        const msg = std.fmt.bufPrint(&buf, "bash: line 1: cd: {s}: No such file or directory\n", .{dir}) catch "bash: cd: error\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 1;
+    }
+    // Update PWD and OLDPWD
+    const old_pwd = if (var_store.get("PWD")) |v| v.value else "";
+    var new_buf: [4096]u8 = undefined;
+    if (getcwd(&new_buf, new_buf.len)) |pwd_ptr| {
+        const new_pwd = std.mem.sliceTo(pwd_ptr, 0);
+        _ = var_store.set("OLDPWD", old_pwd, false);
+        _ = var_store.set("PWD", new_pwd, false);
     }
     return 0;
 }
@@ -1017,7 +1026,7 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             const name = arg[0..eq];
             var val = arg[eq+1..];
             if (flags & 4 != 0 and val.len > 0) {
-                if (evalLetExpr(val)) |v| {
+                if (executor.resolveIntExpr(std.heap.page_allocator, val)) |v| {
                     var vbuf: [32]u8 = undefined;
                     val = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch val;
                 }
@@ -1030,12 +1039,20 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             if (flags & 8 != 0) {
                 var_store.setReadonly(name, true);
             }
+            if (flags & 4 != 0) {
+                var_store.setIntVar(name, true);
+            }
+            if (flags & 1 != 0) {}
+            if (flags & 2 != 0) {}
         } else {
             if (flags & 16 != 0) {
                 var_store.setExport(arg, true);
             }
             if (flags & 8 != 0) {
                 var_store.setReadonly(arg, true);
+            }
+            if (flags & 4 != 0) {
+                var_store.setIntVar(arg, true);
             }
         }
     }
@@ -1096,7 +1113,7 @@ fn builtinHelp(io: std.Io, args: [][]const u8) u8 {
     const stdout = std.Io.File.stdout();
     if (args.len == 1) {
         _ = std.Io.File.writeStreamingAll(stdout, io,
-            "GNU bash, version 5.2.37(1)-monobash\n"
+            "GNU bash, version 5.2.37(1)-release (x86_64-pc-linux-gnu)\n"
         ) catch {};
         return 0;
     }
@@ -1118,7 +1135,7 @@ fn builtinHistory(io: std.Io, _: [][]const u8) u8 {
     return 0;
 }
 
-fn evalLetExpr(expr: []const u8) ?i64 {
+pub fn evalLetExpr(expr: []const u8) ?i64 {
     if (std.fmt.parseInt(i64, expr, 10)) |val| return val else |_| {}
     var full_buf: [4096]u8 = undefined;
     if (expr.len + 7 > full_buf.len) return null;
