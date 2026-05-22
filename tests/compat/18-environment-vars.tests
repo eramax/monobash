@@ -1,0 +1,35 @@
+@test BASH_VERSION is non-empty
+echo ${BASH_VERSION:+set}
+
+@test HOME is set
+echo ${HOME:+set}
+
+@test PATH is set
+echo ${PATH:+set}
+
+@test PWD is set after cd
+cd /tmp 2>/dev/null; echo ${PWD:+set}
+
+@test OLDPWD after cd
+cd /tmp 2>/dev/null; cd / 2>/dev/null; echo ${OLDPWD:+set}
+
+@test SECONDS is numeric
+echo $SECONDS
+
+@test RANDOM is between 0 and 32767
+echo $RANDOM
+
+@test UID is numeric
+echo $UID
+
+@test EUID is numeric
+echo $EUID
+
+@test HOSTNAME is non-empty
+echo ${HOSTNAME:+set}
+
+@test SHLVL is at least 1
+echo $SHLVL
+
+@test LINENO is numeric
+echo $LINENO

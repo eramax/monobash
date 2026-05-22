@@ -1,0 +1,23 @@
+@basic $() substitution
+result=$(echo hello); echo $result
+
+@$() in string
+echo "hello $(echo world)"
+
+@nested $()
+result=$(echo $(echo nested)); echo $result
+
+@backtick substitution
+result=`echo hello`; echo $result
+
+@$() inside double quotes
+echo "$(echo hello) world"
+
+@$() with pipeline inside
+result=$(echo hello | tr a-z A-Z); echo $result
+
+@$() exit status captured
+true; r=$(echo ok); echo "done"
+
+@command substitution with arithmetic
+result=$(echo $((2+3))); echo $result

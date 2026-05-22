@@ -1,0 +1,63 @@
+@test > stdout truncate write
+echo hello > /tmp/mr_stdout.txt; cat /tmp/mr_stdout.txt
+
+@test >> stdout append
+echo first > /tmp/mr_append.txt; echo second >> /tmp/mr_append.txt; cat /tmp/mr_append.txt
+
+@test < stdin redirect
+echo data > /tmp/mr_stdin.txt; cat < /tmp/mr_stdin.txt
+
+@test 2> stderr redirect to file
+bash -c 'echo errmsg >&2' 2>/tmp/mr_stderr.txt; cat /tmp/mr_stderr.txt
+
+@test 2>> stderr append to file
+bash -c 'echo err1 >&2' 2>/tmp/mr_stderr2.txt; bash -c 'echo err2 >&2' 2>>/tmp/mr_stderr2.txt; cat /tmp/mr_stderr2.txt
+
+@test 2>&1 stderr to stdout
+bash -c 'echo stderr_to_stdout >&2' 2>&1
+
+@test &> both stdout and stderr to file
+{ echo out; echo err >&2; } &>/tmp/mr_both.txt; cat /tmp/mr_both.txt
+
+@test << heredoc basic
+cat <<EOF
+hello world
+EOF
+
+@test << heredoc with quoted delimiter no expansion
+var=expanded; cat <<'EOF'
+$var is literal
+EOF
+
+@test <<< herestring
+cat <<< "hello world"
+
+@test >| clobber override with noclobber
+set -o noclobber; echo first > /tmp/mr_clobber.txt; echo second >| /tmp/mr_clobber.txt; cat /tmp/mr_clobber.txt
+
+@test redirect to /dev/null
+echo silent > /dev/null; echo still_here
+
+@test multiple redirects input and output
+echo data > /tmp/mr_multi.txt; tr a-z A-Z < /tmp/mr_multi.txt > /tmp/mr_multi_out.txt; cat /tmp/mr_multi_out.txt
+
+@test chained redirects >file 2>&1
+echo chain_output > /tmp/mr_chain.txt 2>&1; cat /tmp/mr_chain.txt
+
+@test chained redirects 2>file >&2
+echo chain_stderr >&2 2>/tmp/mr_chain2.txt >&2; cat /tmp/mr_chain2.txt
+
+@test <> read-write redirect on file
+echo data > /tmp/mr_rw.txt; exec 3<>/tmp/mr_rw.txt; IFS= read -r line <&3; echo "$line"; exec 3>&-
+
+@test heredoc with append
+cat >> /tmp/mr_heredoc_app.txt <<EOF
+appended
+EOF
+cat /tmp/mr_heredoc_app.txt
+
+@test pipe with redirect
+echo foo > /tmp/mr_pipe.txt; cat /tmp/mr_pipe.txt | tr a-z A-Z
+
+@test double redirect stdout and stderr
+echo output > /tmp/mr_double.txt 2>&1; cat /tmp/mr_double.txt

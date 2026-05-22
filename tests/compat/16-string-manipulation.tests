@@ -1,0 +1,23 @@
+@test simple string concatenation
+a=hello; b=world; echo $a$b
+
+@test in-string concatenation with braces
+a=hello; echo ${a}world
+
+@test quoted concatenation
+a=hello; echo "${a} world"
+
+@test brace disambiguation
+a=hello; echo ${a}world
+
+@test multiple concatenation
+a=hello; b=world; echo ${a}_${b}_${a}
+
+@test concatenation with empty string
+a=hello; echo ${a}""
+
+@test concatenation with numbers
+a=abc; echo ${a}123
+
+@test chained variable concatenation
+a=foo; b=bar; c=baz; echo $a$b$c

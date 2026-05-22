@@ -1,0 +1,35 @@
+@test empty command with whitespace
+     
+
+@test multiple semicolons
+;; echo "still ok"
+
+@test very long argument
+echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+@test special characters in backslash string
+echo '\$`"!'
+
+@test empty string test with -z
+[ -z "" ]; echo $?
+
+@test non-empty string test with -n
+[ -n "x" ]; echo $?
+
+@test commands with leading spaces
+  echo "leading spaces"
+
+@test multiple spaces between args
+echo a    b
+
+@test trailing backslash
+x=hello\; echo $x
+
+@test quoted empty string
+x=""; echo ${#x}
+
+@test command with no output
+true
+
+@test semi-colon separated commands
+echo first; echo second; echo third

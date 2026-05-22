@@ -1,0 +1,30 @@
+@background with wait
+sleep 0 & wait
+
+@$! PID tracking
+sleep 0 & pid=$!; wait $pid; echo "pid=$pid"
+
+@multiple background jobs
+sleep 0 & p1=$!; sleep 0 & p2=$!; wait $p1; wait $p2; echo "done"
+
+@wait with specific PID
+sleep 0 & pid=$!; wait $pid; echo "exit=$?"
+
+@wait without arguments
+sleep 0 & sleep 0 & wait; echo "all done"
+
+@jobs listing (non-interactive)
+sleep 0 & jobs; wait
+
+@disown
+sleep 0 & disown; echo "disowned"
+
+@background exit status via wait
+true & wait $!; echo "true=$?"
+false & wait $!; echo "false=$?"
+
+@background pipeline exit status
+(exit 42) & wait $!; echo "exit=$?"
+
+@multiple background exit statuses
+(exit 2) & p1=$!; (exit 3) & p2=$!; wait $p1; echo "p1=$?"; wait $p2; echo "p2=$?"

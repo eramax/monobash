@@ -1,0 +1,42 @@
+@semicolon separator
+echo a; echo b
+
+@pipe
+echo hello | cat
+
+@background
+true & wait
+
+@OR list
+false || echo ok
+
+@AND list
+true && echo ok
+
+@newline terminator
+echo a
+echo b
+
+@comment ignored
+echo ok # comment
+
+@append redirect
+echo a >> /dev/null
+
+@AND OR chaining
+true && echo a || echo b
+
+@pipe and semicolon
+echo a | cat; echo b
+
+@AND chain
+true && echo a && echo b
+
+@OR chain
+false || echo a || echo b
+
+@pipeline chain
+echo a | cat | cat
+
+@redirect then command
+echo a > /dev/null; echo b

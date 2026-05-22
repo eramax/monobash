@@ -136,14 +136,54 @@ fn execNode(io: std.Io, node: NodeType, source: []const u8) u8 {
 fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
     const count = parser.childCount(node);
-    for (0..count) |i| {
+    var i: usize = 0;
+    while (i < count) {
         const child = parser.childAt(node, i);
-        last = execNode(io, child, source);
-        if (var_store.errexit and last != 0) {
-            return last;
+        const cname = nodeName(child);
+
+        // Check if next child is &
+        var is_background = false;
+        if (i + 1 < count) {
+            const next = parser.childAt(node, i + 1);
+            if (std.mem.eql(u8, nodeName(next), "&")) {
+                is_background = true;
+            }
+        }
+
+        if (is_background) {
+            const pid = c.fork();
+            if (pid < 0) return 1;
+            if (pid == 0) {
+                c._exit(execNode(io, child, source));
+            }
+            var_store.addJob(@intCast(pid));
+            var_store.setLastBgPid(@intCast(pid));
+            var buf: [16]u8 = undefined;
+            const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
+            var_store.set("!", pid_str, false);
+            i += 2;
+        } else {
+            // Skip non-statement children (terminators like ;)
+            if (isTerminator(cname)) {
+                i += 1;
+                continue;
+            }
+            const status = execNode(io, child, source);
+            last = status;
+            if (var_store.errexit and status != 0) {
+                return status;
+            }
+            i += 1;
         }
     }
     return last;
+}
+
+fn isTerminator(name: []const u8) bool {
+    return std.mem.eql(u8, name, ";") or
+        std.mem.eql(u8, name, "&") or
+        std.mem.eql(u8, name, ";;") or
+        std.mem.eql(u8, name, "|");
 }
 
 fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -890,9 +930,40 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
     }
     var last: u8 = 0;
-    for (0..count) |i| {
+    var i: usize = 0;
+    while (i < count) {
         const child = parser.childAt(node, i);
-        last = execNode(io, child, source);
+        const cname = nodeName(child);
+
+        // Check if next child is &
+        var is_background = false;
+        if (i + 1 < count) {
+            const next = parser.childAt(node, i + 1);
+            if (std.mem.eql(u8, nodeName(next), "&")) {
+                is_background = true;
+            }
+        }
+
+        if (is_background) {
+            const pid = c.fork();
+            if (pid < 0) return 1;
+            if (pid == 0) {
+                c._exit(execNode(io, child, source));
+            }
+            var_store.addJob(@intCast(pid));
+            var_store.setLastBgPid(@intCast(pid));
+            var buf: [16]u8 = undefined;
+            const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
+            var_store.set("!", pid_str, false);
+            i += 2;
+        } else {
+            if (isTerminator(cname)) {
+                i += 1;
+                continue;
+            }
+            last = execNode(io, child, source);
+            i += 1;
+        }
     }
     return last;
 }

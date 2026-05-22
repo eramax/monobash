@@ -1,0 +1,35 @@
+@test star matches anything
+x=foobar; case $x in foo*) echo yes;; esac
+
+@test question mark matches single char
+case b in ?) echo yes;; esac
+
+@test bracket expression positive
+case b in [abc]) echo yes;; esac
+
+@test negated bracket expression
+case a in [!abc]) echo no;; *) echo yes;; esac
+
+@test bracket range
+case c in [a-z]) echo yes;; esac
+
+@test multiple patterns with pipe
+case x in a|b|x) echo yes;; esac
+
+@test default star case
+case z in a) echo no;; *) echo yes;; esac
+
+@test pattern with alternation default
+case y in a|b) echo no;; *) echo yes;; esac
+
+@test set -f disables glob expansion
+set -f; echo *; set +f
+
+@test extended glob ?(pattern)
+shopt -s extglob 2>/dev/null; x=abc; case $x in ?(a|b)c) echo yes;; *) echo no;; esac
+
+@test extended glob +(pattern)
+shopt -s extglob 2>/dev/null; x=abc; case $x in +(a|b)c) echo yes;; *) echo no;; esac
+
+@test pattern matching with literal dot
+case file.txt in *.txt) echo yes;; esac

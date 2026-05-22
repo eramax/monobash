@@ -1,0 +1,70 @@
+@backslash preserves dollar
+echo \$x
+
+@backslash preserves backslash
+echo \\\\
+
+@backslash preserves space
+echo a\ b
+
+@backslash newline continuation
+echo foo\
+bar
+
+@single quotes prevent expansion
+echo '$HOME'
+
+@single quotes preserve backslashes
+echo '\\'
+
+@single quotes preserve newlines
+echo 'a
+b'
+
+@double quotes allow expansion
+echo "$HOME"
+
+@double quotes allow command substitution
+echo "$(echo hi)"
+
+@double quotes allow backtick
+echo "\`echo hi\`"
+
+@double quotes allow arithmetic
+echo "$((2+3))"
+
+@double quotes preserve spaces
+echo "a    b"
+
+@ansi-c newline via hex
+echo $'hello\x0aworld'
+
+@ansi-c tab
+echo $'a\tb'
+
+@ansi-c backslash
+echo $'\\\\'
+
+@ansi-c single quote
+echo $'\''
+
+@ansi-c double quote
+echo $'\"'
+
+@ansi-c hex
+echo $'\x41'
+
+@ansi-c octal
+echo $'\101'
+
+@ansi-c alert
+echo $'\a'
+
+@empty double quotes
+echo ""
+
+@mixed quoting
+echo "'$HOME'"
+
+@escaped double quotes
+echo "he said \"hello\""

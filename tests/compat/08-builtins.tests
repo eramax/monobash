@@ -1,0 +1,110 @@
+@echo basic
+echo hello world
+
+@echo no newline
+echo -n hello; echo
+
+@echo escape processing
+echo -e 'a\tb'
+
+@true exit code
+true; echo $?
+
+@false exit code
+false; echo $?
+
+@cd and pwd
+cd /tmp && pwd
+
+@pwd output
+pwd
+
+@type echo
+type echo >/dev/null 2>&1; echo $?
+
+@type true
+type true >/dev/null 2>&1; echo $?
+
+@type false
+type false >/dev/null 2>&1; echo $?
+
+@command -v echo
+command -v echo >/dev/null 2>&1; echo $?
+
+@read variable
+echo hello | read v; echo $v
+
+@read multiple variables
+echo a b c | read x y z; echo $x $y $z
+
+@read with IFS
+echo a:b:c | IFS=: read x y z; echo $x
+
+@printf percent s
+printf '%s' hello
+
+@printf percent d
+printf '%d' 42
+
+@printf percent b
+printf '%b' 'a\tb'
+
+@printf escape sequences
+printf 'ab\ncd'
+
+@printf format string
+printf '[%s]' a b c
+
+@kill list signals
+kill -l 2>/dev/null | wc -w
+
+@shift positional parameters
+set -- a b c d; shift 2; echo $*
+
+@export variable
+export MYVAR=exported; echo $MYVAR
+
+@export visible to child
+export EXP_CHILD=yes; bash -c 'echo $EXP_CHILD'
+
+@readonly variable
+readonly ROVAL=immutable; echo $ROVAL
+
+@readonly prevents modification
+readonly ROVAL2=val; ROVAL2=new 2>/dev/null; echo $?; echo $ROVAL2
+
+@unset variable
+x=hello; unset x; echo ${x:-unset}
+
+@unset array element
+arr=(a b c); unset arr[1]; echo ${arr[*]}
+
+@alias and unalias
+shopt -s expand_aliases 2>/dev/null; alias hi='echo hello'; hi; unalias hi
+
+@help builtin
+help 2>/dev/null | head -1; echo $?
+
+@help echo
+help echo 2>/dev/null | wc -l
+
+@declare variable
+declare MYDECL=declared; echo $MYDECL
+
+@declare integer
+declare -i n=5; n+=3; echo $n
+
+@declare readonly
+declare -r DR=readonly; echo $DR
+
+@typeset variable
+typeset TST=typeset_val; echo $TST
+
+@dirs pushd popd
+pushd /tmp >/dev/null 2>&1; pwd; popd >/dev/null 2>&1; pwd
+
+@source script
+echo 'SRCVAR=sourced' > /tmp/_mono_src.sh; . /tmp/_mono_src.sh; echo $SRCVAR; rm -f /tmp/_mono_src.sh
+
+@source with arguments
+echo 'echo $1 $2' > /tmp/_mono_src2.sh; . /tmp/_mono_src2.sh hello world; rm -f /tmp/_mono_src2.sh

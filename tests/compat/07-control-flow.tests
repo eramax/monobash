@@ -1,0 +1,53 @@
+@if true then
+if true; then echo yes; fi
+
+@if false else
+if false; then echo no; else echo yes; fi
+
+@if elif else
+x=2; if [ $x -eq 1 ]; then echo one; elif [ $x -eq 2 ]; then echo two; else echo other; fi
+
+@if elif elif else
+x=3; if [ $x -eq 1 ]; then echo one; elif [ $x -eq 2 ]; then echo two; elif [ $x -eq 3 ]; then echo three; else echo other; fi
+
+@for loop with list
+result=""; for i in a b c; do result="$result $i"; done; echo $result
+
+@for loop with brace expansion
+result=""; for i in {1..3}; do result="$result $i"; done; echo $result
+
+@for loop with command substitution
+result=""; for i in $(echo a b c); do result="$result $i"; done; echo $result
+
+@while loop count to 3
+i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done
+
+@until loop count to 3
+i=0; until [ $i -ge 3 ]; do echo $i; i=$((i+1)); done
+
+@case matching
+case foo in foo) echo match;; *) echo no;; esac
+
+@case with default
+case bar in foo) echo match;; *) echo default;; esac
+
+@case with multiple patterns
+case b in a|b|c) echo yes;; esac
+
+@case with glob pattern
+case foobar in foo*) echo yes;; esac
+
+@break from loop
+result=""; for i in 1 2 3 4; do if [ $i -eq 3 ]; then break; fi; result="$result $i"; done; echo $result
+
+@continue in loop
+result=""; for i in 1 2 3; do if [ $i -eq 2 ]; then continue; fi; result="$result $i"; done; echo $result
+
+@nested loops break 2
+result=""; for i in 1 2; do for j in a b; do if [ $i -eq 2 ] && [ $j = "a" ]; then break 2; fi; result="$result$i$j"; done; done; echo $result
+
+@nested loops continue 2
+result=""; for i in 1 2; do for j in a b; do if [ $j = "a" ]; then continue 2; fi; result="$result$i$j"; done; done; echo $result
+
+@select loop prompt
+PS3="pick: "; select opt in a b; do echo $opt; break; done < /dev/null 2>/dev/null; echo ok

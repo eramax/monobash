@@ -1,0 +1,45 @@
+@basic $((2+3))
+echo $((2+3))
+
+@$(( )) with variables
+x=5; y=3; echo $((x + y))
+
+@$(( )) complex expression
+echo $(((1+2)*3))
+
+@(( )) as command zero
+(( 1 )); echo "exit=$?"
+
+@(( )) as command non-zero
+(( 0 )); echo "exit=$?"
+
+@(( i = 5 )) variable assignment in arithmetic
+(( i = 5 )); echo $i
+
+@increment with (( i += 1 ))
+i=3; (( i += 1 )); echo $i
+
+@comparison (( 5 > 3 ))
+(( 5 > 3 )); echo "exit=$?"
+(( 1 > 5 )); echo "exit=$?"
+
+@let builtin
+let x=5+3; echo $x
+
+@let with multiple expressions
+let x=5 y=x+2; echo $x $y
+
+@bitwise AND $(( 5 & 3 ))
+echo $((5 & 3))
+
+@bitwise OR $(( 5 | 1 ))
+echo $((5 | 1))
+
+@bitwise XOR $(( 5 ^ 3 ))
+echo $((5 ^ 3))
+
+@$(( )) with hex 0xFF
+echo $((0xFF))
+
+@$(( )) with negation and modulo
+echo $((-5 % 3))

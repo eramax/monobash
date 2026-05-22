@@ -644,9 +644,12 @@ fn builtinTimes(io: std.Io, args: [][]const u8) u8 {
 fn builtinWait(io: std.Io, args: [][]const u8) u8 {
     if (args.len == 1) {
         // wait for all background jobs
-        for (var_store.getJobs()) |pid| {
+        // Copy job list since removeJob mutates the original during iteration
+        const jobs_copy = std.heap.page_allocator.dupe(u32, var_store.getJobs()) catch return 1;
+        defer std.heap.page_allocator.free(jobs_copy);
+        for (jobs_copy) |pid| {
             var wstatus: c_int = 0;
-            _ = waitpid(@intCast(pid), &wstatus, 0);
+            _ = waitpid(@as(c_int, @intCast(pid)), &wstatus, 0);
             var_store.removeJob(pid);
         }
         return 0;

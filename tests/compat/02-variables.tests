@@ -1,0 +1,74 @@
+@simple assignment
+x=value; echo $x
+
+@exit status zero
+true; echo $?
+
+@exit status nonzero
+false; echo $?
+
+@shell PID
+echo $$
+
+@background PID
+true & echo $!
+
+@positional param count
+set -- a b c; echo $#
+
+@shell flags
+echo $-
+
+@all positional params
+set -- a b c; printf '%s\n' "$@"
+
+@all positional star
+set -- a b c; printf '%s\n' "$*"
+
+@script name
+echo $0
+
+@first positional param
+set -- a b c; echo $1
+
+@ninth positional param
+set -- a b c d e f g h i; echo $9
+
+@multiple assignments
+a=1 b=2; echo $a$b
+
+@unset variable
+unset x; echo $x
+
+@variable in double quotes
+x=value; echo "$x"
+
+@IFS default
+echo "$IFS" | od -An -tx1
+
+@PATH variable
+echo $PATH
+
+@HOME variable
+echo $HOME
+
+@nested variable expansion
+x=hello; echo ${x}
+
+@default value expansion
+echo ${x:-default}
+
+@assign default value
+echo ${x:=value}; echo $x
+
+@alternate value expansion
+x=set; echo ${x:+alt}
+
+@string length
+x=hello; echo ${#x}
+
+@positional param count zero
+echo $#
+
+@two positional params
+set -- a b; echo $2

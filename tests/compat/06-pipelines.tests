@@ -1,0 +1,38 @@
+@simple pipe
+echo hello | tr a-z A-Z
+
+@multi-stage pipe
+echo hello | tr a-z A-Z | rev
+
+@pipeline exit status success
+true | true; echo $?
+
+@pipeline exit status failure
+true | false; echo $?
+
+@not negation of false
+! false; echo $?
+
+@not negation of true
+! true; echo $?
+
+@pipefail with mixed success
+set -o pipefail; false | true; echo $?; set +o pipefail
+
+@pipefail with all success
+set -o pipefail; true | true; echo $?; set +o pipefail
+
+@cat file piped to head
+echo -e "line1\nline2\nline3\nline4\nline5" > /tmp/_mono_pipe.txt; cat /tmp/_mono_pipe.txt | head -1; rm -f /tmp/_mono_pipe.txt
+
+@echo piped to wc
+echo "hello world" | wc -w
+
+@pipe with input redirection
+cat < /dev/null | wc -l
+
+@pipeline with stderr redirection
+echo ok 2>&1 | cat
+
+@multiple pipes with redirection
+echo hello | tr a-z A-Z > /tmp/_mono_pipe_out.txt; cat /tmp/_mono_pipe_out.txt; rm -f /tmp/_mono_pipe_out.txt
