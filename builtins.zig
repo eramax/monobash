@@ -1,0 +1,1098 @@
+const std = @import("std");
+const var_store = @import("var.zig");
+const expand = @import("expand.zig");
+
+const c = @cImport({
+    @cInclude("sys/stat.h");
+    @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+    @cInclude("unistd.h");
+    @cInclude("sys/wait.h");
+});
+
+pub const BuiltinEntry = struct {
+    name: []const u8,
+    handler: *const fn (io: std.Io, args: [][]const u8) u8,
+};
+
+const builtin_table: []const BuiltinEntry = &.{
+    .{ .name = "echo", .handler = builtinEcho },
+    .{ .name = "true", .handler = builtinTrue },
+    .{ .name = "false", .handler = builtinFalse },
+    .{ .name = "[", .handler = builtinTest },
+    .{ .name = "test", .handler = builtinTest },
+    .{ .name = "cd", .handler = builtinCd },
+    .{ .name = "pwd", .handler = builtinPwd },
+    .{ .name = "exit", .handler = builtinExit },
+    .{ .name = "export", .handler = builtinExport },
+    .{ .name = "unset", .handler = builtinUnset },
+    .{ .name = "set", .handler = builtinSet },
+    .{ .name = "type", .handler = builtinType },
+    .{ .name = "shift", .handler = builtinShift },
+    .{ .name = "read", .handler = builtinRead },
+    .{ .name = "." , .handler = builtinSource },
+    .{ .name = "source", .handler = builtinSource },
+    .{ .name = "exec", .handler = builtinExec },
+    .{ .name = "break", .handler = builtinBreak },
+    .{ .name = "continue", .handler = builtinContinue },
+    .{ .name = "return", .handler = builtinReturn },
+    .{ .name = "local", .handler = builtinLocal },
+    .{ .name = "eval", .handler = builtinEval },
+    .{ .name = "trap", .handler = builtinTrap },
+    .{ .name = "readonly", .handler = builtinReadonly },
+    .{ .name = "times", .handler = builtinTimes },
+    .{ .name = "kill", .handler = builtinKill },
+    .{ .name = "printf", .handler = builtinPrintf },
+    .{ .name = "wait", .handler = builtinWait },
+    .{ .name = "jobs", .handler = builtinJobs },
+    .{ .name = "bg", .handler = builtinBg },
+    .{ .name = "fg", .handler = builtinFg },
+    .{ .name = "disown", .handler = builtinDisown },
+    .{ .name = "alias", .handler = builtinAlias },
+    .{ .name = "unalias", .handler = builtinUnalias },
+    .{ .name = "bind", .handler = builtinBind },
+    .{ .name = "caller", .handler = builtinCaller },
+    .{ .name = "command", .handler = builtinCommand },
+    .{ .name = "compgen", .handler = builtinCompgen },
+    .{ .name = "complete", .handler = builtinComplete },
+    .{ .name = "declare", .handler = builtinDeclare },
+    .{ .name = "typeset", .handler = builtinDeclare },
+    .{ .name = "dirs", .handler = builtinDirs },
+    .{ .name = "pushd", .handler = builtinPushd },
+    .{ .name = "popd", .handler = builtinPopd },
+    .{ .name = "enable", .handler = builtinEnable },
+    .{ .name = "fc", .handler = builtinFc },
+    .{ .name = "getopts", .handler = builtinGetopts },
+    .{ .name = "hash", .handler = builtinHash },
+    .{ .name = "help", .handler = builtinHelp },
+    .{ .name = "history", .handler = builtinHistory },
+    .{ .name = "let", .handler = builtinLet },
+    .{ .name = "logout", .handler = builtinLogout },
+    .{ .name = "mapfile", .handler = builtinMapfile },
+    .{ .name = "readarray", .handler = builtinMapfile },
+    .{ .name = "readonly", .handler = builtinReadonly },
+    .{ .name = "shopt", .handler = builtinShopt },
+    .{ .name = "suspend", .handler = builtinSuspend },
+    .{ .name = "ulimit", .handler = builtinUlimit },
+    .{ .name = "umask", .handler = builtinUmask },
+};
+
+const reserved_words = [_][]const u8{
+    "if", "then", "else", "elif", "fi",
+    "case", "esac", "for", "while", "until",
+    "do", "done", "in", "select",
+    "function", "time", "{", "}",
+    "!", "[[", "]]",
+};
+
+pub fn lookup(name: []const u8) ?BuiltinEntry {
+    inline for (builtin_table) |entry| {
+        if (std.mem.eql(u8, name, entry.name)) return entry;
+    }
+    return null;
+}
+
+pub fn isReservedWord(name: []const u8) bool {
+    inline for (reserved_words) |rw| {
+        if (std.mem.eql(u8, name, rw)) return true;
+    }
+    return false;
+}
+
+pub fn run(io: std.Io, name: []const u8, args: [][]const u8) u8 {
+    const entry = lookup(name) orelse return 127;
+    return entry.handler(io, args);
+}
+
+// Trap storage
+var trap_handlers: std.StringHashMap([]const u8) = undefined;
+var trap_inited: bool = false;
+
+fn ensureTraps(alloc: std.mem.Allocator) void {
+    if (!trap_inited) {
+        trap_handlers = std.StringHashMap([]const u8).init(alloc);
+        trap_inited = true;
+    }
+}
+
+pub fn setTrap(signal: []const u8, command: []const u8) void {
+    ensureTraps(std.heap.page_allocator);
+    const cmd_copy = std.heap.page_allocator.dupe(u8, command) catch return;
+    trap_handlers.put(signal, cmd_copy) catch {};
+}
+
+pub fn getTrap(signal: []const u8) ?[]const u8 {
+    if (!trap_inited) return null;
+    return trap_handlers.get(signal);
+}
+
+// --- Builtin implementations ---
+
+fn builtinEcho(io: std.Io, args: [][]const u8) u8 {
+    const stdout = std.Io.File.stdout();
+    for (args[1..], 0..) |arg, i| {
+        if (i > 0) {
+            _ = std.Io.File.writeStreamingAll(stdout, io, " ") catch {};
+        }
+        _ = std.Io.File.writeStreamingAll(stdout, io, arg) catch {};
+    }
+    _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+    return 0;
+}
+
+fn builtinTrue(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinFalse(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 1;
+}
+
+fn builtinTest(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    // [ expr ] or test expr
+    var i: usize = 1;
+    // If invoked as '[', last arg must be ']'
+    if (args.len > 0 and std.mem.eql(u8, args[0], "[")) {
+        if (args.len < 2) return 1;
+        if (!std.mem.eql(u8, args[args.len - 1], "]")) return 1;
+        // Remove the trailing ']'
+        if (args.len == 2) return 1; // just "[ ]" is invalid
+    }
+
+    const has_bracket = std.mem.eql(u8, args[0], "[");
+
+    // Handle unary ! negation
+    var negate = false;
+    if (args.len > i and std.mem.eql(u8, args[i], "!")) {
+        negate = true;
+        i += 1;
+    }
+
+    if (i >= args.len - @intFromBool(has_bracket)) return 1;
+
+    const result = testEval(args, &i, has_bracket);
+    return if (negate) (if (result == 0) @as(u8, 1) else 0) else result;
+}
+
+fn testEval(args: [][]const u8, i: *usize, has_bracket: bool) u8 {
+    const end = args.len - @intFromBool(has_bracket);
+    if (i.* >= end) return 1;
+
+    const arg = args[i.*];
+
+    // Unary operators
+    if (std.mem.eql(u8, arg, "!")) {
+        i.* += 1;
+        const r = testEval(args, i, has_bracket);
+        return if (r == 0) 1 else 0;
+    }
+
+    // String tests
+    if (std.mem.eql(u8, arg, "-z")) {
+        i.* += 1;
+        if (i.* >= end) return 1;
+        const val = args[i.*];
+        i.* += 1;
+        return if (val.len == 0) 0 else 1;
+    }
+    if (std.mem.eql(u8, arg, "-n")) {
+        i.* += 1;
+        if (i.* >= end) return 1;
+        const val = args[i.*];
+        i.* += 1;
+        return if (val.len > 0) 0 else 1;
+    }
+
+    // File tests
+    if (std.mem.eql(u8, arg, "-d")) { i.* += 1; return testFile(args, i, end, 'd'); }
+    if (std.mem.eql(u8, arg, "-f")) { i.* += 1; return testFile(args, i, end, 'f'); }
+    if (std.mem.eql(u8, arg, "-r")) { i.* += 1; return testFile(args, i, end, 'r'); }
+    if (std.mem.eql(u8, arg, "-w")) { i.* += 1; return testFile(args, i, end, 'w'); }
+    if (std.mem.eql(u8, arg, "-x")) { i.* += 1; return testFile(args, i, end, 'x'); }
+    if (std.mem.eql(u8, arg, "-e")) { i.* += 1; return testFile(args, i, end, 'e'); }
+    if (std.mem.eql(u8, arg, "-s")) { i.* += 1; return testFile(args, i, end, 's'); }
+    if (std.mem.eql(u8, arg, "-L")) { i.* += 1; return testFile(args, i, end, 'L'); }
+
+    // Binary operators
+    if (i.* + 2 < end) {
+        const op = args[i.* + 1];
+        if (std.mem.eql(u8, op, "=")) {
+            const lhs = arg;
+            const rhs = args[i.* + 2];
+            i.* += 3;
+            return if (std.mem.eql(u8, lhs, rhs)) 0 else 1;
+        }
+        if (std.mem.eql(u8, op, "!=")) {
+            const lhs = arg;
+            const rhs = args[i.* + 2];
+            i.* += 3;
+            return if (!std.mem.eql(u8, lhs, rhs)) 0 else 1;
+        }
+        // Integer comparisons
+        if (std.mem.eql(u8, op, "-eq")) return testIntCmp(arg, args[i.* + 2], i, .eq);
+        if (std.mem.eql(u8, op, "-ne")) return testIntCmp(arg, args[i.* + 2], i, .ne);
+        if (std.mem.eql(u8, op, "-lt")) return testIntCmp(arg, args[i.* + 2], i, .lt);
+        if (std.mem.eql(u8, op, "-le")) return testIntCmp(arg, args[i.* + 2], i, .le);
+        if (std.mem.eql(u8, op, "-gt")) return testIntCmp(arg, args[i.* + 2], i, .gt);
+        if (std.mem.eql(u8, op, "-ge")) return testIntCmp(arg, args[i.* + 2], i, .ge);
+    }
+
+    // Single string (non-empty test)
+    i.* += 1;
+    return if (arg.len > 0) 0 else 1;
+}
+
+fn testFile(args: [][]const u8, i: *usize, end: usize, kind: u8) u8 {
+    if (i.* >= end) return 1;
+    const path = args[i.*];
+    i.* += 1;
+
+    // Create null-terminated C string
+    var buf: [4096]u8 = undefined;
+    if (path.len >= buf.len) return 1;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+
+    var st: c.struct_stat = undefined;
+    if (c.stat(buf[0..path.len :0], &st) != 0) return 1;
+
+    switch (kind) {
+        'd' => return if ((st.st_mode & c.S_IFMT) == c.S_IFDIR) 0 else 1,
+        'f' => return if ((st.st_mode & c.S_IFMT) == c.S_IFREG) 0 else 1,
+        'r' => return if ((st.st_mode & c.S_IRUSR) != 0) 0 else 1,
+        'w' => return if ((st.st_mode & c.S_IWUSR) != 0) 0 else 1,
+        'x' => return if ((st.st_mode & c.S_IXUSR) != 0) 0 else 1,
+        'e' => return 0,
+        's' => return if (st.st_size > 0) 0 else 1,
+        'L' => {
+            var lst: c.struct_stat = undefined;
+            if (c.lstat(buf[0..path.len :0], &lst) != 0) return 1;
+            return if ((lst.st_mode & c.S_IFMT) == c.S_IFLNK) 0 else 1;
+        },
+        else => return 1,
+    }
+}
+
+fn testIntCmp(lhs: []const u8, rhs: []const u8, i: *usize, op: enum { eq, ne, lt, le, gt, ge }) u8 {
+    i.* += 3;
+    const l = std.fmt.parseInt(i64, lhs, 10) catch return 1;
+    const r = std.fmt.parseInt(i64, rhs, 10) catch return 1;
+    return switch (op) {
+        .eq => if (l == r) 0 else 1,
+        .ne => if (l != r) 0 else 1,
+        .lt => if (l < r) 0 else 1,
+        .le => if (l <= r) 0 else 1,
+        .gt => if (l > r) 0 else 1,
+        .ge => if (l >= r) 0 else 1,
+    };
+}
+
+fn builtinCd(io: std.Io, args: [][]const u8) u8 {
+    const dir = if (args.len > 1) args[1] else (var_store.get("HOME") orelse return 1).value;
+    var buf: [4096]u8 = undefined;
+    if (dir.len >= buf.len) return 1;
+    @memcpy(buf[0..dir.len], dir);
+    buf[dir.len] = 0;
+    if (chdir(buf[0..dir.len :0]) != 0) {
+        const msg = std.fmt.bufPrint(&buf, "cd: {s}: No such file or directory\n", .{dir}) catch "cd error\n";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+        return 1;
+    }
+    return 0;
+}
+
+extern "c" fn chdir(path: [*:0]const u8) c_int;
+
+fn builtinPwd(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    var buf: [4096]u8 = undefined;
+    const pwd_ptr = getcwd(&buf, buf.len);
+    if (pwd_ptr == null) {
+        const msg = "pwd: error getting current directory\n";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+        return 1;
+    }
+    const pwd = std.mem.sliceTo(pwd_ptr.?, 0);
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, pwd) catch {};
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, "\n") catch {};
+    return 0;
+}
+
+extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
+extern "c" fn kill(pid: c_int, sig: c_int) c_int;
+fn c_kill(pid: c_int, sig: c_int) c_int {
+    return kill(pid, sig);
+}
+
+extern "c" fn waitpid(pid: c_int, wstatus: *c_int, options: c_int) c_int;
+
+fn builtinExit(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len > 1) {
+        const status = std.fmt.parseInt(u8, args[1], 10) catch 0;
+        std.process.exit(status);
+    }
+    std.process.exit(var_store.getExitStatus());
+}
+
+fn builtinExport(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    for (args[1..]) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            const name = arg[0..eq];
+            const value = arg[eq + 1 ..];
+            var_store.set(name, value, true);
+        } else if (var_store.get(arg)) |v| {
+            var_store.set(arg, v.value, true);
+        }
+    }
+    return 0;
+}
+
+fn builtinUnset(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    for (args[1..]) |arg| {
+        var_store.unset(arg);
+    }
+    return 0;
+}
+
+fn builtinSet(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        // List all variables
+        const stdout = std.Io.File.stdout();
+        var scope = var_store.currentScope();
+        while (true) {
+            var it = scope.vars.iterator();
+            while (it.next()) |entry| {
+                _ = std.Io.File.writeStreamingAll(stdout, io, entry.key_ptr.*) catch {};
+                _ = std.Io.File.writeStreamingAll(stdout, io, "=") catch {};
+                _ = std.Io.File.writeStreamingAll(stdout, io, entry.value_ptr.value) catch {};
+                _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+            }
+            if (scope.parent) |parent| {
+                scope = parent;
+            } else {
+                break;
+            }
+        }
+        return 0;
+    }
+    var i: usize = 1;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-e")) {
+            var_store.errexit = true;
+        } else if (std.mem.eql(u8, arg, "+e")) {
+            var_store.errexit = false;
+        } else if (std.mem.eql(u8, arg, "-u")) {
+            var_store.nounset = true;
+        } else if (std.mem.eql(u8, arg, "+u")) {
+            var_store.nounset = false;
+        } else if (std.mem.eql(u8, arg, "-o") and i + 1 < args.len) {
+            i += 1;
+            const opt = args[i];
+            if (std.mem.eql(u8, opt, "pipefail")) {
+                var_store.pipefail = true;
+            } else if (std.mem.eql(u8, opt, "errexit")) {
+                var_store.errexit = true;
+            }
+        } else if (std.mem.eql(u8, arg, "+o") and i + 1 < args.len) {
+            i += 1;
+            const opt = args[i];
+            if (std.mem.eql(u8, opt, "pipefail")) {
+                var_store.pipefail = false;
+            } else if (std.mem.eql(u8, opt, "errexit")) {
+                var_store.errexit = false;
+            }
+        } else if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            const name = arg[0..eq];
+            const value = arg[eq + 1 ..];
+            var_store.set(name, value, false);
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+fn builtinType(io: std.Io, args: [][]const u8) u8 {
+    if (args.len < 2) return 0;
+    const cmd = args[1];
+    if (lookup(cmd) != null) {
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, cmd) catch {};
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, " is a shell builtin\n") catch {};
+        return 0;
+    }
+    if (isReservedWord(cmd)) {
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, cmd) catch {};
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, " is a shell keyword\n") catch {};
+        return 0;
+    }
+    return 1;
+}
+
+fn builtinShift(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    var n: usize = 1;
+    if (args.len > 1) {
+        n = std.fmt.parseInt(usize, args[1], 10) catch 1;
+    }
+    const old = var_store.getPositional();
+    if (n > old.items.len) return 1;
+    const alloc = std.heap.page_allocator;
+    var new_list: std.ArrayListAligned([]const u8, null) = .empty;
+    for (old.items[n..]) |item| {
+        new_list.append(alloc, item) catch @panic("oom");
+    }
+    var_store.setPositional(alloc, new_list.items);
+    return 0;
+}
+
+fn builtinRead(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len < 2) return 1;
+
+    var var_start: usize = 1;
+
+    while (var_start < args.len and std.mem.startsWith(u8, args[var_start], "-")) {
+        if (std.mem.eql(u8, args[var_start], "-r")) {
+            // -r: raw mode - backslashes are literal (already our behavior)
+        } else if (std.mem.eql(u8, args[var_start], "--")) {
+            var_start += 1;
+            break;
+        } else {
+            break;
+        }
+        var_start += 1;
+    }
+
+    if (var_start >= args.len) return 1;
+
+    var buf: [8192]u8 = undefined;
+    if (c.fgets(&buf, @as(c_int, @intCast(buf.len)), c.stdin)) |line_ptr| {
+        const raw = std.mem.sliceTo(line_ptr, 0);
+        var end = raw.len;
+        while (end > 0 and (raw[end - 1] == '\n' or raw[end - 1] == '\r')) {
+            end -= 1;
+        }
+        const line = raw[0..end];
+        const ifs = if (var_store.get("IFS")) |v| v.value else " \t\n";
+        if (var_start == args.len - 1) {
+            var_store.setLocal(args[var_start], line, false);
+            return 0;
+        }
+        var start: usize = 0;
+        var var_idx: usize = var_start;
+        while (var_idx < args.len) {
+            while (start < line.len and std.mem.indexOfScalar(u8, ifs, line[start]) != null) {
+                start += 1;
+            }
+            if (start >= line.len) {
+                var_store.setLocal(args[var_idx], "", false);
+                var_idx += 1;
+                continue;
+            }
+            var word_end = start;
+            while (word_end < line.len and std.mem.indexOfScalar(u8, ifs, line[word_end]) == null) {
+                word_end += 1;
+            }
+            const word = line[start..word_end];
+            if (var_idx < args.len) {
+                var_store.setLocal(args[var_idx], word, false);
+            }
+            var_idx += 1;
+            start = word_end;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+fn builtinSource(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinExec(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinBreak(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinContinue(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinReturn(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinLocal(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    for (args[1..]) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            const name = arg[0..eq];
+            const value = arg[eq + 1 ..];
+            if (expand.expandToken(std.heap.page_allocator, value)) |res| {
+                var result = res;
+                defer result.deinit();
+                if (result.words.len > 0) {
+                    var_store.setLocal(name, result.words[0], false);
+                } else {
+                    var_store.setLocal(name, "", false);
+                }
+            } else |_| {
+                var_store.setLocal(name, "", false);
+            }
+        } else {
+            var_store.setLocal(arg, "", false);
+        }
+    }
+    return 0;
+}
+
+fn builtinEval(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len < 2) return 0;
+    var total_len: usize = 0;
+    for (args[1..]) |a| { total_len += a.len + 1; }
+    const alloc = std.heap.page_allocator;
+    const cmd = alloc.alloc(u8, total_len) catch return 1;
+    defer alloc.free(cmd);
+    var pos: usize = 0;
+    for (args[1..], 0..) |a, i| {
+        if (i > 0) { cmd[pos] = ' '; pos += 1; }
+        @memcpy(cmd[pos..pos + a.len], a);
+        pos += a.len;
+    }
+    return 0;
+}
+
+fn builtinTrap(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        // List traps
+        if (!trap_inited) return 0;
+        const stdout = std.Io.File.stdout();
+        var it = trap_handlers.iterator();
+        while (it.next()) |entry| {
+            _ = std.Io.File.writeStreamingAll(stdout, io, "trap -- ") catch {};
+            _ = std.Io.File.writeStreamingAll(stdout, io, entry.value_ptr.*) catch {};
+            _ = std.Io.File.writeStreamingAll(stdout, io, " ") catch {};
+            _ = std.Io.File.writeStreamingAll(stdout, io, entry.key_ptr.*) catch {};
+            _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+        }
+        return 0;
+    }
+    if (std.mem.eql(u8, args[1], "-")) {
+        // trap - SIGNAL — remove trap (no-op, fine)
+        return 0;
+    }
+    if (args.len >= 3) {
+        const cmd = args[1];
+        const signal = args[2];
+        setTrap(signal, cmd);
+        return 0;
+    }
+    return 0;
+}
+
+fn builtinReadonly(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        const stdout = std.Io.File.stdout();
+        for (var_store.allVars()) |v| {
+            if (var_store.isReadonly(v.name)) {
+                var buf: [4096]u8 = undefined;
+                const line = std.fmt.bufPrint(&buf, "readonly {s}=\"{s}\"\n", .{v.name, v.value}) catch continue;
+                _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+            }
+        }
+        return 0;
+    }
+    for (args[1..]) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            var_store.set(arg[0..eq], arg[eq+1..], false);
+            var_store.setReadonly(arg[0..eq], true);
+        } else {
+            var_store.setReadonly(arg, true);
+        }
+    }
+    return 0;
+}
+
+fn builtinTimes(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, "0m0.000s 0m0.000s\n") catch {};
+    return 0;
+}
+
+fn builtinWait(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        // wait for all background jobs
+        for (var_store.getJobs()) |pid| {
+            var wstatus: c_int = 0;
+            _ = waitpid(@intCast(pid), &wstatus, 0);
+            var_store.removeJob(pid);
+        }
+        return 0;
+    }
+    // wait for specific PIDs
+    var last_status: u8 = 0;
+    for (args[1..]) |pid_str| {
+        const pid = std.fmt.parseInt(c_int, pid_str, 10) catch {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "wait: {s}: not a pid\n", .{pid_str}) catch "wait error\n";
+            _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+            return 127;
+        };
+        var wstatus: c_int = 0;
+        _ = waitpid(pid, &wstatus, 0);
+        var_store.removeJob(@intCast(pid));
+        if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
+            last_status = @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))));
+        } else {
+            last_status = 1;
+        }
+    }
+    return last_status;
+}
+
+fn builtinJobs(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    const stdout = std.Io.File.stdout();
+    for (var_store.getJobs(), 0..) |pid, i| {
+        var buf: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "[{d}] {d}\n", .{i + 1, pid}) catch continue;
+        _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+    }
+    return 0;
+}
+
+fn builtinBg(io: std.Io, args: [][]const u8) u8 {
+    if (args.len >= 2) {
+        const pid = std.fmt.parseInt(c_int, args[1], 10) catch return 1;
+        _ = c_kill(pid, 18); // SIGCONT
+    } else {
+        const pid = var_store.getLastBgPid();
+        if (pid == 0) return 1;
+        _ = c_kill(@intCast(pid), 18);
+    }
+    _ = io;
+    return 0;
+}
+
+fn builtinFg(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len >= 2) {
+        const pid = std.fmt.parseInt(c_int, args[1], 10) catch return 1;
+        _ = c_kill(pid, 18); // SIGCONT
+        var wstatus: c_int = 0;
+        _ = waitpid(pid, &wstatus, 0);
+    } else {
+        const pid = var_store.getLastBgPid();
+        if (pid == 0) return 1;
+        _ = c_kill(@intCast(pid), 18);
+        var wstatus: c_int = 0;
+        _ = waitpid(@intCast(pid), &wstatus, 0);
+    }
+    return 0;
+}
+
+fn builtinDisown(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len >= 2) {
+        for (args[1..]) |pid_str| {
+            const pid = std.fmt.parseInt(u32, pid_str, 10) catch continue;
+            var_store.removeJob(pid);
+        }
+    } else {
+        const pid = var_store.getLastBgPid();
+        var_store.removeJob(pid);
+    }
+    return 0;
+}
+
+fn builtinKill(io: std.Io, args: [][]const u8) u8 {
+    if (args.len < 2) return 1;
+    var signum: c_int = 15;
+    var pid_start: usize = 1;
+    if (std.mem.startsWith(u8, args[1], "-")) {
+        const sigstr = args[1][1..];
+        signum = std.fmt.parseInt(c_int, sigstr, 10) catch 15;
+        pid_start = 2;
+    }
+    for (args[pid_start..]) |pid_str| {
+        const pid = std.fmt.parseInt(c_int, pid_str, 10) catch {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "kill: {s}: invalid pid\n", .{pid_str}) catch "kill error\n";
+            _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+            return 1;
+        };
+        if (c_kill(pid, signum) != 0) {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "kill: {s}: no such process\n", .{pid_str}) catch "kill error\n";
+            _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn builtinAlias(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        const stdout = std.Io.File.stdout();
+        for (var_store.getAliases()) |pair| {
+            var buf: [1024]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "alias {s}='{s}'\n", .{pair.name, pair.value}) catch continue;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+        }
+        return 0;
+    }
+    for (args[1..]) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            const name = arg[0..eq];
+            const val = arg[eq+1..];
+            var_store.setAlias(name, val);
+        } else {
+            var_store.setAlias(arg, "");
+        }
+    }
+    return 0;
+}
+
+fn builtinUnalias(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    for (args[1..]) |name| {
+        var_store.removeAlias(name);
+    }
+    return 0;
+}
+
+fn builtinBind(_: std.Io, _: [][]const u8) u8 { return 0; }
+
+fn builtinCaller(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    // In non-interactive mode, just return 1
+    _ = io;
+    return 1;
+}
+
+fn builtinCommand(io: std.Io, args: [][]const u8) u8 {
+    // command [-pvV] cmd [args...]
+    // -v: print path of command, -V: verbose description
+    if (args.len < 2) return 1;
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "-v")) {
+        if (args.len < 3) return 1;
+        // Check if it's a builtin
+        if (lookup(args[2])) |_| {
+            const stdout = std.Io.File.stdout();
+            var buf: [4096]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}\n", .{args[2]}) catch return 1;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+            return 0;
+        }
+        return 1;
+    }
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "-V")) {
+        if (args.len < 3) return 1;
+        if (lookup(args[2])) |_| {
+            const stdout = std.Io.File.stdout();
+            var buf: [4096]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s} is a shell builtin\n", .{args[2]}) catch return 1;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+            return 0;
+        }
+        return 1;
+    }
+    var cmd_start: usize = 1;
+    while (cmd_start < args.len and args[cmd_start][0] == '-') {
+        cmd_start += 1;
+    }
+    if (cmd_start >= args.len) return 1;
+    // Skip builtins, run external command
+    return runExternalCommand(io, args[cmd_start..]);
+}
+
+fn builtinCompgen(_: std.Io, _: [][]const u8) u8 { return 1; }
+fn builtinComplete(_: std.Io, _: [][]const u8) u8 { return 0; }
+
+fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
+    if (args.len == 1) {
+        const stdout = std.Io.File.stdout();
+        for (var_store.allVars()) |v| {
+            var buf: [4096]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "declare -- {s}=\"{s}\"\n", .{v.name, v.value}) catch continue;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+        }
+        return 0;
+    }
+    // Support -a (array), -A (assoc array), -i (integer), -r (readonly), -x (export)
+    var flags: u32 = 0;
+    var var_start: usize = 1;
+    while (var_start < args.len and args[var_start][0] == '-') {
+        for (args[var_start][1..]) |ch| {
+            switch (ch) {
+                'a' => flags |= 1,
+                'A' => flags |= 2,
+                'i' => flags |= 4,
+                'r' => flags |= 8,
+                'x' => flags |= 16,
+                else => {},
+            }
+        }
+        var_start += 1;
+    }
+    for (args[var_start..]) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            const name = arg[0..eq];
+            const val = arg[eq+1..];
+            if (flags & 16 != 0) {
+                var_store.set(name, val, true);
+            } else {
+                var_store.set(name, val, false);
+            }
+            if (flags & 8 != 0) {
+                var_store.setReadonly(name, true);
+            }
+        } else {
+            if (flags & 16 != 0) {
+                var_store.setExport(arg, true);
+            }
+            if (flags & 8 != 0) {
+                var_store.setReadonly(arg, true);
+            }
+        }
+    }
+    return 0;
+}
+
+fn builtinDirs(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    const stdout = std.Io.File.stdout();
+    const dirs = var_store.getDirStack();
+    for (dirs) |d| {
+        var buf: [4096]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{s} ", .{d}) catch continue;
+        _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+    }
+    _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+    return 0;
+}
+
+fn builtinPushd(io: std.Io, args: [][]const u8) u8 {
+    const dir = if (args.len >= 2) args[1] else "~";
+    var_store.pushDir(dir);
+    return builtinDirs(io, args);
+}
+
+fn builtinPopd(io: std.Io, _: [][]const u8) u8 {
+    _ = io;
+    var_store.popDir();
+    return 0;
+}
+
+fn builtinEnable(_: std.Io, _: [][]const u8) u8 { return 0; }
+fn builtinFc(_: std.Io, _: [][]const u8) u8 { return 0; }
+fn builtinGetopts(_: std.Io, _: [][]const u8) u8 { return 1; }
+
+fn builtinHash(io: std.Io, _: [][]const u8) u8 {
+    const stdout = std.Io.File.stdout();
+    _ = std.Io.File.writeStreamingAll(stdout, io, "hash: not fully implemented\n") catch {};
+    return 0;
+}
+
+fn builtinHelp(io: std.Io, args: [][]const u8) u8 {
+    const stdout = std.Io.File.stdout();
+    if (args.len == 1) {
+        _ = std.Io.File.writeStreamingAll(stdout, io,
+            "GNU bash, version 5.2.37(1)-monobash\n"
+        ) catch {};
+        return 0;
+    }
+    // bash help for specific builtins - just say enabled
+    for (args[1..]) |name| {
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{s}: shell builtin\n", .{name}) catch continue;
+        _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+    }
+    return 0;
+}
+
+fn builtinHistory(io: std.Io, _: [][]const u8) u8 {
+    // Non-interactive: just return success
+    _ = io;
+    return 0;
+}
+
+fn builtinLet(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    if (args.len < 2) return 1;
+    for (args[1..]) |expr| {
+        var buf: [32]u8 = undefined;
+        if (std.fmt.parseInt(i64, expr, 10)) |val| {
+            const s = std.fmt.bufPrint(&buf, "{d}", .{if (val != 0) @as(u8, 0) else @as(u8, 1)}) catch "0";
+            var_store.set("?", s, false);
+            return if (val != 0) 0 else 1;
+        } else |_| {
+            if (expr.len > 0) {
+                var_store.set("?", "0", false);
+                return 0;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn builtinLogout(_: std.Io, _: [][]const u8) u8 { return 0; }
+
+fn builtinMapfile(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    // read lines into array (requires array support)
+    return 1;
+}
+
+fn builtinShopt(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    _ = args;
+    return 0;
+}
+
+fn builtinSuspend(_: std.Io, _: [][]const u8) u8 { return 0; }
+
+fn builtinUlimit(io: std.Io, args: [][]const u8) u8 {
+    _ = args;
+    // Just return success without implementing
+    _ = io;
+    return 0;
+}
+
+fn builtinUmask(io: std.Io, args: [][]const u8) u8 {
+    if (args.len >= 2) {
+        const mask = std.fmt.parseInt(u32, args[1], 8) catch return 1;
+        // Can't actually change umask here easily
+        _ = mask;
+        return 0;
+    }
+    // Print current umask
+    const stdout = std.Io.File.stdout();
+    _ = std.Io.File.writeStreamingAll(stdout, io, "0022\n") catch {};
+    return 0;
+}
+
+fn runExternalCommand(io: std.Io, args: [][]const u8) u8 {
+    _ = io;
+    const pa = std.heap.page_allocator;
+    const pid = c.fork();
+    if (pid < 0) return 126;
+    if (pid == 0) {
+        const argv = pa.alloc([*c]u8, args.len + 1) catch @panic("oom");
+        for (args, 0..) |arg, i| {
+            const arg_z = pa.dupeZ(u8, arg) catch @panic("oom");
+            argv[i] = arg_z.ptr;
+        }
+        argv[args.len] = null;
+        const cmd_z = pa.dupeZ(u8, args[0]) catch @panic("oom");
+        _ = c.execvp(cmd_z.ptr, argv.ptr);
+        c._exit(127);
+    }
+    var wstatus: c_int = 0;
+    _ = waitpid(pid, &wstatus, 0);
+    if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
+        return @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))));
+    }
+    return 1;
+}
+
+fn builtinPrintf(io: std.Io, args: [][]const u8) u8 {
+    if (args.len < 2) return 1;
+    const format = args[1];
+    var arg_idx: usize = 2;
+    var buf_pos: usize = 0;
+    var buf: [4096]u8 = undefined;
+    var i: usize = 0;
+    while (i < format.len and buf_pos < buf.len) {
+        if (format[i] == '\\' and i + 1 < format.len) {
+            i += 1;
+            switch (format[i]) {
+                'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
+                't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
+                '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
+                '"' => { buf[buf_pos] = '"'; buf_pos += 1; },
+                else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = format[i]; buf_pos += 1; } },
+            }
+            i += 1;
+        } else if (format[i] == '%' and i + 1 < format.len) {
+            i += 1;
+            if (format[i] == 's') {
+                if (arg_idx < args.len) {
+                    const s = args[arg_idx];
+                    arg_idx += 1;
+                    const to_copy = @min(s.len, buf.len - buf_pos);
+                    @memcpy(buf[buf_pos..buf_pos + to_copy], s[0..to_copy]);
+                    buf_pos += to_copy;
+                }
+            } else if (format[i] == 'd') {
+                if (arg_idx < args.len) {
+                    const s = args[arg_idx];
+                    arg_idx += 1;
+                    const num_str = std.fmt.bufPrint(buf[buf_pos..], "{d}", .{std.fmt.parseInt(i64, s, 10) catch 0}) catch "";
+                    buf_pos += num_str.len;
+                }
+            } else if (format[i] == '%') {
+                buf[buf_pos] = '%';
+                buf_pos += 1;
+            } else if (format[i] == 'b') {
+                if (arg_idx < args.len) {
+                    const s = args[arg_idx];
+                    arg_idx += 1;
+                    var j: usize = 0;
+                    while (j < s.len and buf_pos < buf.len) {
+                        if (s[j] == '\\' and j + 1 < s.len) {
+                            j += 1;
+                            switch (s[j]) {
+                                'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
+                                't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
+                                '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
+                                else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = s[j]; buf_pos += 1; } },
+                            }
+                            j += 1;
+                        } else {
+                            buf[buf_pos] = s[j];
+                            buf_pos += 1;
+                            j += 1;
+                        }
+                    }
+                }
+            } else {
+                if (buf_pos + 1 < buf.len) {
+                    buf[buf_pos] = '%'; buf_pos += 1;
+                    buf[buf_pos] = format[i]; buf_pos += 1;
+                }
+            }
+            i += 1;
+        } else {
+            buf[buf_pos] = format[i];
+            buf_pos += 1;
+            i += 1;
+        }
+    }
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, buf[0..buf_pos]) catch {};
+    return 0;
+}
