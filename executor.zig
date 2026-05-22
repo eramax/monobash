@@ -63,6 +63,12 @@ fn nodeName(node: NodeType) []const u8 {
 }
 
 fn execNode(io: std.Io, node: NodeType, source: []const u8) u8 {
+    const status = execNodeInner(io, node, source);
+    recordExitStatus(status);
+    return status;
+}
+
+fn execNodeInner(io: std.Io, node: NodeType, source: []const u8) u8 {
     const name = nodeName(node);
 
     // Dispatch by node type
@@ -133,6 +139,13 @@ fn execNode(io: std.Io, node: NodeType, source: []const u8) u8 {
     return 0;
 }
 
+fn recordExitStatus(status: u8) void {
+    var_store.setExitStatus(status);
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{status}) catch "0";
+    var_store.set("?", s, false);
+}
+
 fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
     const count = parser.childCount(node);
@@ -170,6 +183,7 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
             const status = execNode(io, child, source);
             last = status;
+            recordExitStatus(status);
             if (var_store.errexit and status != 0) {
                 return status;
             }
@@ -189,13 +203,36 @@ fn isTerminator(name: []const u8) bool {
 fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
     const count = parser.childCount(node);
-    for (0..count) |i| {
+    var i: usize = 0;
+    while (i < count) {
         const child = parser.childAt(node, i);
+
+        // Check what operator follows this child
+        if (i + 1 < count) {
+            const next = parser.childAt(node, i + 1);
+            const next_name = nodeName(next);
+            if (std.mem.eql(u8, next_name, "&&")) {
+                const status = execNode(io, child, source);
+                last = status;
+                if (status != 0) break; // short-circuit: && fails
+                i += 2;
+                continue;
+            }
+            if (std.mem.eql(u8, next_name, "||")) {
+                const status = execNode(io, child, source);
+                last = status;
+                if (status == 0) break; // short-circuit: || succeeds
+                i += 2;
+                continue;
+            }
+        }
+
         const status = execNode(io, child, source);
         last = status;
         if (var_store.errexit and status != 0) {
             return status;
         }
+        i += 1;
     }
     return last;
 }
@@ -229,6 +266,14 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     var expanded: std.ArrayListAligned([]const u8, null) = .empty;
     defer expanded.deinit(allocator);
 
+    // First, process variable assignments
+    for (0..count) |i| {
+        const child = parser.childAt(node, i);
+        if (std.mem.eql(u8, nodeName(child), "variable_assignment")) {
+            _ = execVarAssign(io, child, source);
+        }
+    }
+
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
@@ -249,7 +294,10 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
                 const dup = allocator.dupe(u8, w) catch @panic("oom");
                 expanded.append(allocator, dup) catch @panic("oom");
             }
-        } else |_| {
+        } else |err| {
+            if (err == error.UndefinedVar) {
+                return 127;
+            }
             continue;
         }
     }
@@ -304,6 +352,12 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
     if (std.mem.eql(u8, cmd_name, "return")) {
         return_requested = true;
+        if (expanded.items.len > 1) {
+            const val = std.fmt.parseInt(u8, expanded.items[1], 10) catch 0;
+            recordExitStatus(val);
+        } else {
+            recordExitStatus(0);
+        }
         return 0;
     }
 
@@ -345,10 +399,12 @@ fn execExternal(cmd: []const u8, args: [][]const u8) u8 {
     // Parent: wait for child
     var wstatus: c_int = 0;
     _ = c.waitpid(pid, &wstatus, 0);
-    if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
-        return @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))));
-    }
-    return 1;
+    const result = if (c.WIFEXITED(@as(c_int, @intCast(wstatus))))
+        @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))))
+    else
+        1;
+    recordExitStatus(result);
+    return result;
 }
 
 fn execIf(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -723,16 +779,15 @@ fn execPipeline(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
     }
 
-    if (var_store.pipefail) {
-        // Return rightmost non-zero exit status, or 0 if all succeeded
-        var result: u8 = 0;
+    const result = if (var_store.pipefail) blk: {
+        var r: u8 = 0;
         for (statuses.items) |s| {
-            if (s != 0) result = s;
+            if (s != 0) r = s;
         }
-        return result;
-    }
-
-    return last_status;
+        break :blk r;
+    } else last_status;
+    recordExitStatus(result);
+    return result;
 }
 
 const Redirect = struct { op: []const u8, target: []const u8 };
@@ -840,11 +895,14 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
     // Parent: wait for child
     var wstatus: c_int = 0;
     _ = c.waitpid(pid, &wstatus, 0);
-    if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
-        return @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))));
-    }
-    return 1;
+    const result = if (c.WIFEXITED(@as(c_int, @intCast(wstatus))))
+        @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))))
+    else
+        1;
+    recordExitStatus(result);
+    return result;
 }
+
 fn parseFileRedirect(node: NodeType, source: []const u8) ?Redirect {
     const total = parser.childCount(node);
     if (total < 2) return null;
@@ -1030,10 +1088,12 @@ fn execSubshell(io: std.Io, node: NodeType, source: []const u8) u8 {
     // Parent: wait for child
     var wstatus: c_int = 0;
     _ = c.waitpid(pid, &wstatus, 0);
-    if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
-        return @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))));
-    }
-    return 1;
+    const result = if (c.WIFEXITED(@as(c_int, @intCast(wstatus))))
+        @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))))
+    else
+        1;
+    recordExitStatus(result);
+    return result;
 }
 
 extern "c" fn getpid() c_int;
@@ -1046,7 +1106,9 @@ fn execNegated(io: std.Io, node: NodeType, source: []const u8) u8 {
     if (count == 0) return 0;
     const child = parser.childAt(node, 0);
     const status = execNode(io, child, source);
-    return if (status == 0) 1 else 0;
+    const result: u8 = if (status == 0) 1 else 0;
+    recordExitStatus(result);
+    return result;
 }
 
 fn execTest(io: std.Io, node: NodeType, source: []const u8) u8 {

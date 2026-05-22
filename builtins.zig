@@ -130,13 +130,33 @@ pub fn getTrap(signal: []const u8) ?[]const u8 {
 
 fn builtinEcho(io: std.Io, args: [][]const u8) u8 {
     const stdout = std.Io.File.stdout();
-    for (args[1..], 0..) |arg, i| {
-        if (i > 0) {
+    var i: usize = 1;
+    var no_newline = false;
+
+    while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
+        if (std.mem.eql(u8, args[i], "-n")) {
+            no_newline = true;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "-e")) {
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "-E")) {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    var first = true;
+    while (i < args.len) : (i += 1) {
+        if (!first) {
             _ = std.Io.File.writeStreamingAll(stdout, io, " ") catch {};
         }
-        _ = std.Io.File.writeStreamingAll(stdout, io, arg) catch {};
+        first = false;
+        _ = std.Io.File.writeStreamingAll(stdout, io, args[i]) catch {};
     }
-    _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+    if (!no_newline) {
+        _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
+    }
     return 0;
 }
 
@@ -333,11 +353,10 @@ extern "c" fn waitpid(pid: c_int, wstatus: *c_int, options: c_int) c_int;
 
 fn builtinExit(io: std.Io, args: [][]const u8) u8 {
     _ = io;
-    if (args.len > 1) {
-        const status = std.fmt.parseInt(u8, args[1], 10) catch 0;
-        std.process.exit(status);
-    }
-    std.process.exit(var_store.getExitStatus());
+    const status = if (args.len > 1) (std.fmt.parseInt(u8, args[1], 10) catch 0) else var_store.getExitStatus();
+    // Signal to the executor that we want to exit
+    // The executor will fire EXIT trap in its exec() function
+    std.process.exit(status);
 }
 
 fn builtinExport(io: std.Io, args: [][]const u8) u8 {
@@ -384,6 +403,15 @@ fn builtinSet(io: std.Io, args: [][]const u8) u8 {
         return 0;
     }
     var i: usize = 1;
+    if (i < args.len and std.mem.eql(u8, args[i], "--")) {
+        i += 1;
+        if (i < args.len) {
+            var_store.setPositional(std.heap.page_allocator, args[i..]);
+        } else {
+            var_store.setPositional(std.heap.page_allocator, &.{});
+        }
+        return 0;
+    }
     while (i < args.len) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "-e")) {
@@ -1027,75 +1055,106 @@ fn builtinPrintf(io: std.Io, args: [][]const u8) u8 {
     if (args.len < 2) return 1;
     const format = args[1];
     var arg_idx: usize = 2;
-    var buf_pos: usize = 0;
-    var buf: [4096]u8 = undefined;
-    var i: usize = 0;
-    while (i < format.len and buf_pos < buf.len) {
-        if (format[i] == '\\' and i + 1 < format.len) {
-            i += 1;
-            switch (format[i]) {
-                'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
-                't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
-                '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
-                '"' => { buf[buf_pos] = '"'; buf_pos += 1; },
-                else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = format[i]; buf_pos += 1; } },
-            }
-            i += 1;
-        } else if (format[i] == '%' and i + 1 < format.len) {
-            i += 1;
-            if (format[i] == 's') {
-                if (arg_idx < args.len) {
-                    const s = args[arg_idx];
-                    arg_idx += 1;
-                    const to_copy = @min(s.len, buf.len - buf_pos);
-                    @memcpy(buf[buf_pos..buf_pos + to_copy], s[0..to_copy]);
-                    buf_pos += to_copy;
+    var total_buf: [8192]u8 = undefined;
+    var total_pos: usize = 0;
+
+    // Loop over format string until all args consumed
+    var format_cycle: usize = 0;
+    while (arg_idx < args.len or format_cycle == 0) {
+        format_cycle += 1;
+        var buf_pos: usize = 0;
+        var buf: [4096]u8 = undefined;
+        var i: usize = 0;
+        while (i < format.len and buf_pos < buf.len) {
+            if (format[i] == '\\' and i + 1 < format.len) {
+                i += 1;
+                switch (format[i]) {
+                    'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
+                    't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
+                    '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
+                    '"' => { buf[buf_pos] = '"'; buf_pos += 1; },
+                    else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = format[i]; buf_pos += 1; } },
                 }
-            } else if (format[i] == 'd') {
-                if (arg_idx < args.len) {
-                    const s = args[arg_idx];
-                    arg_idx += 1;
-                    const num_str = std.fmt.bufPrint(buf[buf_pos..], "{d}", .{std.fmt.parseInt(i64, s, 10) catch 0}) catch "";
-                    buf_pos += num_str.len;
-                }
-            } else if (format[i] == '%') {
-                buf[buf_pos] = '%';
-                buf_pos += 1;
-            } else if (format[i] == 'b') {
-                if (arg_idx < args.len) {
-                    const s = args[arg_idx];
-                    arg_idx += 1;
-                    var j: usize = 0;
-                    while (j < s.len and buf_pos < buf.len) {
-                        if (s[j] == '\\' and j + 1 < s.len) {
-                            j += 1;
-                            switch (s[j]) {
-                                'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
-                                't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
-                                '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
-                                else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = s[j]; buf_pos += 1; } },
+                i += 1;
+            } else if (format[i] == '%' and i + 1 < format.len) {
+                i += 1;
+                if (format[i] == 's') {
+                    if (arg_idx < args.len) {
+                        const s = args[arg_idx];
+                        arg_idx += 1;
+                        const to_copy = @min(s.len, buf.len - buf_pos);
+                        @memcpy(buf[buf_pos..buf_pos + to_copy], s[0..to_copy]);
+                        buf_pos += to_copy;
+                    }
+                } else if (format[i] == 'd') {
+                    if (arg_idx < args.len) {
+                        const s = args[arg_idx];
+                        arg_idx += 1;
+                        const num_str = std.fmt.bufPrint(buf[buf_pos..], "{d}", .{std.fmt.parseInt(i64, s, 10) catch 0}) catch "";
+                        buf_pos += num_str.len;
+                    }
+                } else if (format[i] == '%') {
+                    buf[buf_pos] = '%';
+                    buf_pos += 1;
+                } else if (format[i] == 'b') {
+                    if (arg_idx < args.len) {
+                        const s = args[arg_idx];
+                        arg_idx += 1;
+                        var j: usize = 0;
+                        while (j < s.len and buf_pos < buf.len) {
+                            if (s[j] == '\\' and j + 1 < s.len) {
+                                j += 1;
+                                switch (s[j]) {
+                                    'n' => { buf[buf_pos] = '\n'; buf_pos += 1; },
+                                    't' => { buf[buf_pos] = '\t'; buf_pos += 1; },
+                                    '\\' => { buf[buf_pos] = '\\'; buf_pos += 1; },
+                                    else => { buf[buf_pos] = '\\'; buf_pos += 1; if (buf_pos < buf.len) { buf[buf_pos] = s[j]; buf_pos += 1; } },
+                                }
+                                j += 1;
+                            } else {
+                                buf[buf_pos] = s[j];
+                                buf_pos += 1;
+                                j += 1;
                             }
-                            j += 1;
-                        } else {
-                            buf[buf_pos] = s[j];
-                            buf_pos += 1;
-                            j += 1;
                         }
                     }
+                } else if (format[i] == 'X') {
+                    if (arg_idx < args.len) {
+                        const s = args[arg_idx];
+                        arg_idx += 1;
+                        const num = std.fmt.parseInt(u64, s, 10) catch 0;
+                        const num_str = std.fmt.bufPrint(buf[buf_pos..], "{X}", .{num}) catch "";
+                        buf_pos += num_str.len;
+                    }
+                } else if (format[i] == 'x') {
+                    if (arg_idx < args.len) {
+                        const s = args[arg_idx];
+                        arg_idx += 1;
+                        const num = std.fmt.parseInt(u64, s, 10) catch 0;
+                        const num_str = std.fmt.bufPrint(buf[buf_pos..], "{x}", .{num}) catch "";
+                        buf_pos += num_str.len;
+                    }
+                } else {
+                    if (buf_pos + 1 < buf.len) {
+                        buf[buf_pos] = '%'; buf_pos += 1;
+                        buf[buf_pos] = format[i]; buf_pos += 1;
+                    }
                 }
+                i += 1;
             } else {
-                if (buf_pos + 1 < buf.len) {
-                    buf[buf_pos] = '%'; buf_pos += 1;
-                    buf[buf_pos] = format[i]; buf_pos += 1;
-                }
+                buf[buf_pos] = format[i];
+                buf_pos += 1;
+                i += 1;
             }
-            i += 1;
-        } else {
-            buf[buf_pos] = format[i];
-            buf_pos += 1;
-            i += 1;
         }
+        // Append this cycle's output to total
+        const to_copy = @min(buf_pos, total_buf.len - total_pos);
+        @memcpy(total_buf[total_pos..total_pos + to_copy], buf[0..to_copy]);
+        total_pos += to_copy;
+
+        // Stop if no more args AND we've processed the format at least once
+        if (arg_idx >= args.len) break;
     }
-    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, buf[0..buf_pos]) catch {};
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, total_buf[0..total_pos]) catch {};
     return 0;
 }

@@ -50,6 +50,7 @@ pub fn init(allocator: std.mem.Allocator) void {
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 fn c_getenv(name: [:0]const u8) ?[]const u8 {
     const ptr = getenv(name.ptr);
     return if (ptr) |p| std.mem.sliceTo(p, 0) else null;
@@ -87,6 +88,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 extern "c" fn getpid() c_int;
 
 pub fn set(name: []const u8, value: []const u8, exported: bool) void {
+    if (isReadonly(name)) return;
     var s: ?*Scope = global_scope;
     while (s) |scope| {
         if (scope.vars.get(name)) |_| {
@@ -144,8 +146,23 @@ pub fn getAllocator() std.mem.Allocator {
 pub fn unset(name: []const u8) void {
     var s: ?*Scope = global_scope;
     while (s) |scope| {
-        if (scope.vars.remove(name)) return;
+        if (scope.vars.remove(name)) {
+            var buf: [4096]u8 = undefined;
+            if (name.len < buf.len) {
+                @memcpy(buf[0..name.len], name);
+                buf[name.len] = 0;
+                _ = unsetenv(buf[0..name.len :0]);
+            }
+            return;
+        }
         s = scope.parent;
+    }
+    // Also try unsetenv even if not in our scope (env-only var)
+    var buf: [4096]u8 = undefined;
+    if (name.len < buf.len) {
+        @memcpy(buf[0..name.len], name);
+        buf[name.len] = 0;
+        _ = unsetenv(buf[0..name.len :0]);
     }
 }
 

@@ -107,82 +107,90 @@ Skipped: 0
 ### Bash comparison suite (tests/compare.sh — 302 tests across 20 categories)
 ```
 Total  : 302
-Passed : 163
-Failed : 139  (gaps vs bash)
-Coverage: 54%
+Passed : 183
+Failed : 119  (gaps vs bash)
+Coverage: 61%
 ```
 See Gap Analysis section below for detailed breakdown by category.
 
 ## Gap Analysis (bash vs monobash comparison suite)
 
-The comparison suite (`tests/compare.sh`) runs 302 tests across 20 categories against both bash and monobash, then reports gaps. Current results: **163/302 pass (54%)**.
+The comparison suite (`tests/compare.sh`) runs 302 tests across 20 categories against both bash and monobash, then reports gaps. Current results: **183/302 pass (61%)**.
 
 ### Per-Category Coverage
 
 | Category | Passed | Failed | Total | Coverage |
 |----------|--------|--------|-------|----------|
 | 00-quoting | 21 | 2 | 23 | 91% |
-| 01-tokens | 12 | 2 | 14 | 86% |
-| 02-variables | 12 | 13 | 25 | 48% |
+| 01-tokens | 14 | 0 | 14 | **100%** |
+| 02-variables | 18 | 7 | 25 | 72% |
 | 03-parameter-expansion | 17 | 9 | 26 | 65% |
 | 04-arrays | 0 | 14 | 14 | 0% |
 | 05-redirection | 5 | 5 | 10 | 50% |
-| 06-pipelines | 9 | 4 | 13 | 69% |
+| 06-pipelines | 11 | 2 | 13 | 85% |
 | 07-control-flow | 4 | 14 | 18 | 22% |
-| 08-builtins | 22 | 15 | 37 | 59% |
-| 09-job-control | 5 | 5 | 10 | 50% |
+| 08-builtins | 27 | 10 | 37 | 73% |
+| 09-job-control | 8 | 2 | 10 | 80% |
 | 10-functions | 6 | 6 | 12 | 50% |
-| 11-command-substitution | 8 | 0 | 8 | 100% |
-| 12-arithmetic | 5 | 10 | 15 | 33% |
-| 13-error-handling | 5 | 8 | 13 | 38% |
+| 11-command-substitution | 8 | 0 | 8 | **100%** |
+| 12-arithmetic | 6 | 9 | 15 | 40% |
+| 13-error-handling | 7 | 6 | 13 | 54% |
 | 14-brace-expansion | 0 | 10 | 10 | 0% |
 | 15-pattern-matching | 2 | 10 | 12 | 17% |
-| 16-string-manipulation | 8 | 0 | 8 | 100% |
+| 16-string-manipulation | 8 | 0 | 8 | **100%** |
 | 17-declare-typeset | 7 | 3 | 10 | 70% |
 | 18-environment-vars | 4 | 8 | 12 | 33% |
-| 19-edge-cases | 11 | 1 | 12 | 92% |
+| 19-edge-cases | 10 | 2 | 12 | 83% |
+
+### Recent Fixes (this session)
+
+1. **`$?` exit status tracking** — added `recordExitStatus()` wrapper around `execNode` so `$?` is updated after every command
+2. **`set -- a b c`** — `builtinSet` now handles `--` separator and sets positional parameters
+3. **Variable assignments in simple commands** — `execSimpleCommand` now processes `variable_assignment` children before expanding command words (fixes standalone `x=2` before other commands)
+4. **echo -n flag** — suppresses trailing newline
+5. **printf argument cycling** — format string reuses cyclically for all remaining arguments (like `printf '%s\n' a b c`)
+6. **AND/OR short-circuit** — `execList` checks for `&&`/`||` operators and short-circuits based on exit status
+7. **`$-` expansion** — added to `expandPositional`'s special var handling
+8. **Expansion error propagation** — `UndefinedVar` errors from `${var:?}` now return exit code 127
+9. **Readonly enforcement** — `set()` and `setLocal()` check `isReadonly()` before overwriting
+10. **unset C environment cleanup** — `unset()` now calls `unsetenv()` to sync the C environment
+11. **return value parsing** — `return N` now sets `$?` to N
+12. **Background operator** — `&` background execution in `execProgram`/`execCompound` with job tracking
 
 ### Priority Areas (sorted by gap impact)
 
-#### Phase 1 — Easy wins (bugs, not missing features)
-1. **Backslash-newline continuation** — `echo foo\<newline>bar` produces "foo bar" instead of "foobar"
-2. **Single quotes with newlines** — `$'a\nb'` prints with literal `'` quotes
-3. **AND/OR list chaining** — `false || echo a && echo b` runs both sides when `||` should short-circuit
-4. **echo -n/-e** — flags not implemented; `echo -n` prints "-n"
-5. **printf escapes** — `\n` in format string not processed correctly
-6. **Positional params missing** — `set -- a b c` and then `$#` returns 0; vars get/set don't cross correctly in `-c` mode
-7. **set -u exit code** — should exit 1, not 0
+#### Remaining bugs (should work, don't)
+1. **`$x` expansion in `[ "$x" -eq 2 ]`** — variable set via `setenv` not resolved by `wordexp` in `[` context; `echo $x` works fine
+2. **if/elif/else with variables** — `elif` conditions using expanded variables fail (same root cause as above)
+3. **for/while/until loop variables** — loop iteration and body execution with variable assignment broken
+4. **Backslash-newline continuation** — `echo foo\<newline>bar` produces "foo bar" instead of "foobar"
+5. **Single quotes with newlines** — `$'a\nb'` prints with literal `'` quotes
+6. **Case pattern matching** — glob patterns (`*`, `?`, `[abc]`) not matching in case statements
+7. **select loop** — non-interactive handling needs improvement (prints menu when it shouldn't)
 8. **cd error message** — format doesn't match bash
-9. **trap EXIT** — output formatting differs
-10. **readonly enforcement** — doesn't prevent writes to readonly vars
-11. **alias/unalias** — stderr output format mismatches
-12. **heredoc body pipe** — herestrings `<<<` produce wrong output
-13. **2>&1 redirect** — stderr not properly merged to stdout
-14. **! pipeline negation** — returns wrong exit code for negated true
+9. **alias/unalias** — stderr output format mismatches
+10. **heredoc/herestring** — `<<<` produces wrong output; `2>&1` redirect issues
+11. **! pipeline negation** — exit code for negated true is wrong
+12. **Multiple semicolons** — `;;` syntax error not detected
 
-#### Phase 2 — Missing feature categories (larger effort)
-15. **Arrays** — full indexed array support (a=(1 2 3), ${a[@]}, ${#a[@]}, a+=(4))
-16. **Brace expansion** — {a,b,c}, {1..5}, {a..e} completely absent
-17. **Parameter expansion operators** — ${var:offset}, ${var/pat/repl}, ${!indirect}, ${!prefix*}
-18. **Arithmetic command with vars** — (( i = 5 )), (( i += 1 )), (( 5 > 3 )) don't affect variables
-19. **let builtin** — doesn't evaluate expressions
-20. **declare -i** — integer attribute doesn't affect arithmetic
-21. **Case pattern matching** — glob patterns (`*`, `?`, `[abc]`) not working in case statements
-22. **Associative arrays** — declare -A, key-value storage
-23. **select loop** — detected but no interactive input
-24. **exit status 127** — command-not-found not returning 127
-25. **fork/exec from -c** — monobash gets 127 for "nonexistent" from `bash -c` wrapper due to PATH
+#### Missing feature categories
+13. **Arrays** — full indexed array support (a=(1 2 3), ${a[@]}, ${#a[@]}, a+=(4))
+14. **Brace expansion** — {a,b,c}, {1..5}, {a..e} completely absent
+15. **Parameter expansion operators** — ${var:offset}, ${var/pat/repl}, ${!indirect}, ${!prefix*}
+16. **Arithmetic command with vars** — (( i = 5 )), (( i += 1 )), (( 5 > 3 )) don't affect variables
+17. **let builtin** — doesn't evaluate expressions
+18. **declare -i** — integer attribute doesn't affect arithmetic
+19. **Associative arrays** — declare -A, key-value storage
+20. **exit status 127** — command-not-found not returning 127
+21. **Shell variables** — BASH_VERSION, SECONDS, RANDOM, UID, EUID, HOSTNAME, SHLVL, LINENO not set
 
-#### Phase 3 — Environment/stub improvements
-26. **Shell variables** — BASH_VERSION, SECONDS, RANDOM, UID, EUID, HOSTNAME, SHLVL, LINENO not set
-27. **PATH inheritance** — hardcoded to `/usr/local/bin:/usr/bin:/bin` instead of inheriting
-28. **$- flags** — hardcoded to "hB" instead of reflecting actual shell state
-29. **kill -l** — not implemented
-30. **dirs/pushd/popd** — output format doesn't match bash
-31. **Multiple semicolons** — `;; echo "still ok"` should be a syntax error
-32. **shopt** — all options stubbed to no-op
-33. **getopts, fc, complete, compgen** — all stubs
-34. **Process substitution** — <(...) >(...) not supported
+#### Environment/stub improvements
+22. **PATH inheritance** — hardcoded to `/usr/local/bin:/usr/bin:/bin` instead of inheriting
+23. **$- flags** — hardcoded to "hB" instead of reflecting actual shell state
+24. **kill -l** — not implemented
+25. **dirs/pushd/popd** — output format doesn't match bash
+26. **shopt, getopts, fc, complete, compgen** — all stubs
+27. **Process substitution** — <(...) >(...) not supported
 
 ### Comparison Test Infrastructure
 

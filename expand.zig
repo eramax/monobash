@@ -192,7 +192,7 @@ fn expandPositional(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         if (raw[i] == '$' and i + 1 < raw.len) {
             // Special vars that wordpexp DOES handle: $$, $0, $- (pass through)
             // Special vars that wordpexp DOES NOT handle: $?, $!
-            if (raw[i + 1] == '?' or raw[i + 1] == '!') {
+            if (raw[i + 1] == '?' or raw[i + 1] == '!' or raw[i + 1] == '-') {
                 const val = var_store.getSpecial(raw[i + 1]);
                 try result.appendSlice(allocator, val);
                 i += 2;
