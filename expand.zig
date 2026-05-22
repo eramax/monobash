@@ -476,7 +476,8 @@ pub fn expandToken(allocator: std.mem.Allocator, raw: []const u8) WordExpError!W
     defer allocator.free(expanded_params);
     const raw_z = try allocator.dupeZ(u8, expanded_params);
     defer allocator.free(raw_z);
-    return expandRaw(allocator, raw_z, 0);
+    const flags: c_int = if (var_store.nounset) c.WRDE_UNDEF else 0;
+    return expandRaw(allocator, raw_z, flags);
 }
 
 fn isPureAnsiC(raw: []const u8) bool {
@@ -829,7 +830,7 @@ fn handleParamInner(allocator: std.mem.Allocator, content: []const u8) WordExpEr
         }
         if (var_store.nounset) {
             var msg_buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, "bash: {s}: unbound variable\n", .{name}) catch "bash: unbound variable\n";
+            const msg = std.fmt.bufPrint(&msg_buf, "bash: line 1: {s}: unbound variable\n", .{name}) catch "bash: unbound variable\n";
             writeStderr(msg);
             return error.UndefinedVar;
         }
@@ -1411,6 +1412,27 @@ const ArithParser = struct {
 
             if (ch >= '0' and ch <= '9') {
                 const start = self.pos;
+                // Check for hex prefix 0x or 0X
+                if (ch == '0' and self.pos + 1 < self.expr.len and (self.expr[self.pos + 1] == 'x' or self.expr[self.pos + 1] == 'X')) {
+                    self.pos += 2;
+                    while (self.pos < self.expr.len) {
+                        const hexch = self.expr[self.pos];
+                        if ((hexch >= '0' and hexch <= '9') or (hexch >= 'a' and hexch <= 'f') or (hexch >= 'A' and hexch <= 'F')) {
+                            self.pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    return std.fmt.parseInt(i64, self.expr[start..self.pos], 0) catch return error.Syntax;
+                }
+                // Check for octal prefix 0
+                if (ch == '0') {
+                    self.pos += 1;
+                    while (self.pos < self.expr.len and self.expr[self.pos] >= '0' and self.expr[self.pos] <= '7') {
+                        self.pos += 1;
+                    }
+                    return std.fmt.parseInt(i64, self.expr[start..self.pos], 0) catch return error.Syntax;
+                }
                 while (self.pos < self.expr.len and self.expr[self.pos] >= '0' and self.expr[self.pos] <= '9') {
                     self.pos += 1;
                 }

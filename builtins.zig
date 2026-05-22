@@ -814,8 +814,9 @@ fn builtinJobs(io: std.Io, args: [][]const u8) u8 {
             }
             break :blk "Running";
         } else "Running";
-        var buf: [128]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "[{d}]+  {s}\n", .{i + 1, state_str}) catch continue;
+        const cmd = var_store.getJobCmd(pid) orelse "";
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "[{d}]+  {s: <20} {s}\n", .{i + 1, state_str, cmd}) catch continue;
         _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
     }
     return 0;

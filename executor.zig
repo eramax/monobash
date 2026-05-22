@@ -35,6 +35,15 @@ pub fn init(alloc: std.mem.Allocator) void {
 
 pub fn exec(io: std.Io, tree: *const parser.TreeType, src: []const u8) u8 {
     const node = parser.rootNode(tree);
+    var_store.nounset_error = false;
+
+    // Check for ;; at the start of source (syntax error outside case statement)
+    if (std.mem.startsWith(u8, src, ";;")) {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "bash: -c: line 1: syntax error near unexpected token `;;'\n", .{}) catch "syntax error\n";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+        return 2;
+    }
 
     // Only reject top-level ERROR nodes (;;), but execute through
     // descendant errors from tree-sitter limitations
@@ -50,7 +59,8 @@ pub fn exec(io: std.Io, tree: *const parser.TreeType, src: []const u8) u8 {
         }
     }
     if (has_direct_error) {
-        const msg = "bash: syntax error near unexpected token\n";
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "bash: -c: line 1: syntax error near unexpected token `;;'\n", .{}) catch "bash: syntax error near unexpected token\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 2;
     }
@@ -196,7 +206,8 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             if (pid == 0) {
                 c._exit(execNode(io, child, source));
             }
-            var_store.addJob(@intCast(pid));
+            const cmd_text = std.mem.trim(u8, nodeText(child, source), " \t\n\r");
+            var_store.addJobWithCmd(@intCast(pid), cmd_text);
             var_store.setLastBgPid(@intCast(pid));
             var buf: [16]u8 = undefined;
             const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
@@ -204,14 +215,16 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             i += 2;
         } else {
             if (isSyntaxErrorToken(cname)) {
-                const msg = "bash: syntax error near unexpected token `;;'\n";
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "bash: -c: line 1: syntax error near unexpected token `;;'\n", .{}) catch "bash: syntax error near unexpected token `;;'\n";
                 _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
                 return 2;
             }
             if (isTerminator(cname)) {
                 if (prev_was_semi and std.mem.eql(u8, cname, ";")) {
-                    const msg = "bash: syntax error near unexpected token `;;'\n";
-                    _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+                    var buf2: [256]u8 = undefined;
+                    const msg2 = std.fmt.bufPrint(&buf2, "bash: -c: line 1: syntax error near unexpected token `;;'\n", .{}) catch "bash: syntax error near unexpected token `;;'\n";
+                    _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg2) catch {};
                     return 2;
                 }
                 prev_was_semi = std.mem.eql(u8, cname, ";");
@@ -222,6 +235,9 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             const status = execNode(io, child, source);
             last = status;
             recordExitStatus(status);
+            if (var_store.nounset_error) {
+                return status;
+            }
             if (var_store.errexit and status != 0) {
                 return status;
             }
@@ -270,6 +286,9 @@ fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
 
         const status = execNode(io, child, source);
         last = status;
+        if (var_store.nounset_error) {
+            return status;
+        }
         if (var_store.errexit and status != 0) {
             return status;
         }
@@ -295,9 +314,11 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     const has_redirects = redirects.items.len > 0;
+    var saved_in: c_int = -1;
     var saved_out: c_int = -1;
     var saved_err: c_int = -1;
     if (has_redirects) {
+        saved_in = c.dup(0);
         saved_out = c.dup(1);
         saved_err = c.dup(2);
         _ = applyRedirects(redirects.items);
@@ -325,6 +346,7 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     if (has_redirects) {
+        if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
         if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
         if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
     }
@@ -412,10 +434,7 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
         }
 
-        const expandResult = if (var_store.nounset)
-            expand.expandTokenSafe(allocator, raw)
-        else
-            expand.expandToken(allocator, raw);
+        const expandResult = expand.expandToken(allocator, raw);
         if (expandResult) |result| {
             var list = result;
             defer list.deinit();
@@ -425,6 +444,7 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
         } else |err| {
             if (err == error.UndefinedVar) {
+                var_store.nounset_error = true;
                 return 127;
             }
             i += 1;
@@ -745,8 +765,6 @@ fn execFor(io: std.Io, node: NodeType, source: []const u8) u8 {
 
     var last_status: u8 = 0;
     if (is_select) {
-        // If stdin is a tty, show menu and accept input
-        // If stdin is not a tty (e.g., /dev/null), skip the select body
         const is_tty = c.isatty(0) != 0;
         if (is_tty) {
             const stdout = std.Io.File.stdout();
@@ -1028,22 +1046,27 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
     if (redirects.items.len == 0) return execNode(io, cmd_node, source);
 
     // Apply redirects, execute, restore
-    var saved_fds: [3]c_int = .{ -1, -1, -1 };
+    var saved_in: c_int = -1;
+    var saved_out: c_int = -1;
+    var saved_err: c_int = -1;
     if (redirects.items.len > 0) {
-        saved_fds[1] = c.dup(1);
-        saved_fds[2] = c.dup(2);
+        saved_in = c.dup(0);
+        saved_out = c.dup(1);
+        saved_err = c.dup(2);
     }
 
     if (applyRedirects(redirects.items) != 0) {
-        if (saved_fds[1] >= 0) { _ = c.dup2(saved_fds[1], 1); _ = c.close(saved_fds[1]); }
-        if (saved_fds[2] >= 0) { _ = c.dup2(saved_fds[2], 2); _ = c.close(saved_fds[2]); }
+        if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
+        if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+        if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
         return execNode(io, cmd_node, source);
     }
 
     const result = execNode(io, cmd_node, source);
 
-    if (saved_fds[1] >= 0) { _ = c.dup2(saved_fds[1], 1); _ = c.close(saved_fds[1]); }
-    if (saved_fds[2] >= 0) { _ = c.dup2(saved_fds[2], 2); _ = c.close(saved_fds[2]); }
+    if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
+    if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+    if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
 
     return result;
 }
@@ -1204,7 +1227,8 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
             if (pid == 0) {
                 c._exit(execNode(io, child, source));
             }
-            var_store.addJob(@intCast(pid));
+            const cmd_text = std.mem.trim(u8, nodeText(child, source), " \t\n\r");
+            var_store.addJobWithCmd(@intCast(pid), cmd_text);
             var_store.setLastBgPid(@intCast(pid));
             var buf: [16]u8 = undefined;
             const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
@@ -1717,12 +1741,8 @@ pub fn resolveIntExpr(alloc: std.mem.Allocator, expr: []const u8) ?i64 {
 
 fn readonlyError(io: std.Io, name: []const u8) u8 {
     var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "bash: {s}: readonly variable\n", .{name}) catch "bash: readonly variable\n";
+    const msg = std.fmt.bufPrint(&buf, "bash: line 1: {s}: readonly variable\n", .{name}) catch "bash: readonly variable\n";
     _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
-    // In non-interactive mode, readonly assignment error is fatal (bash behavior)
-    if (!var_store.interactive) {
-        std.process.exit(1);
-    }
     return 1;
 }
 
@@ -1892,6 +1912,19 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     if (!found_value) return 0;
+
+    // Expand the value text (e.g., $x -> "foobar")
+    if (expand.expandToken(allocator, value_text)) |res| {
+        var list = res;
+        defer list.deinit();
+        if (list.words.len > 0) {
+            value_text = allocator.dupe(u8, list.words[0]) catch value_text;
+        } else {
+            value_text = "";
+        }
+    } else |_| {
+        value_text = "";
+    }
 
     for (1..ncount) |i| {
         const item = parser.namedChild(node, @intCast(i));
@@ -2095,7 +2128,6 @@ fn matchBracketChar(ch: u8, class: []const u8) bool {
 fn execBuiltinEval(io: std.Io, source: []const u8, args: [][]const u8) u8 {
     _ = source;
     if (args.len < 2) return 0;
-    // Concatenate arguments with spaces
     var total_len: usize = 0;
     for (args[1..]) |a| {
         total_len +|= a.len + 1;
@@ -2114,7 +2146,12 @@ fn execBuiltinEval(io: std.Io, source: []const u8, args: [][]const u8) u8 {
     }
     const cmd_z = allocator.dupeZ(u8, cmd) catch @panic("oom");
     defer allocator.free(cmd_z);
-    const tree = parser.parseString(cmd_z) orelse return 1;
+    const tree = parser.parseString(cmd_z) orelse {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "bash: eval: line 1: syntax error: unexpected end of file\n", .{}) catch "syntax error\n";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+        return 2;
+    };
     defer parser.treeDelete(tree);
     return exec(io, tree, cmd);
 }
@@ -2204,6 +2241,7 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
                         'x' => flags |= 16,
                         'a' => flags |= 1,
                         'A' => flags |= 2,
+                        'p' => flags |= 32,
                         else => {},
                     }
                 }

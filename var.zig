@@ -15,11 +15,13 @@ var global_scope: *Scope = undefined;
 var exit_status: u8 = 0;
 var last_bg_pid: u32 = 0;
 var job_table: std.ArrayListAligned(u32, null) = .empty;
+var job_commands: std.StringHashMap([]const u8) = undefined;
 var positional_params: std.ArrayListAligned([]const u8, null) = .empty;
 
 // Shell options (set -e, set -u, set -o pipefail, etc.)
 pub var errexit: bool = false;
 pub var nounset: bool = false;
+pub var nounset_error: bool = false;
 pub var pipefail: bool = false;
 pub var interactive: bool = false;
 pub var command_flag: bool = false;
@@ -268,6 +270,20 @@ pub fn addJob(pid: u32) void {
     job_table.append(std.heap.page_allocator, pid) catch {};
 }
 
+pub fn addJobWithCmd(pid: u32, cmd: []const u8) void {
+    job_table.append(std.heap.page_allocator, pid) catch {};
+    var key_buf: [16]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "{d}", .{pid}) catch return;
+    const cmd_copy = std.heap.page_allocator.dupe(u8, cmd) catch return;
+    job_commands.put(allocValue(key), cmd_copy) catch {};
+}
+
+pub fn getJobCmd(pid: u32) ?[]const u8 {
+    var key_buf: [16]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "{d}", .{pid}) catch return null;
+    return job_commands.get(key);
+}
+
 pub fn removeJob(pid: u32) void {
     for (job_table.items, 0..) |jp, i| {
         if (jp == pid) {
@@ -283,6 +299,7 @@ pub fn getJobs() []const u32 {
 
 pub fn initJobTable() void {
     job_table = std.ArrayListAligned(u32, null).empty;
+    job_commands = std.StringHashMap([]const u8).init(std.heap.page_allocator);
 }
 
 pub fn getPositional() std.ArrayListAligned([]const u8, null) {
