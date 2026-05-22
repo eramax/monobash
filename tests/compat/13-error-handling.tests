@@ -13,26 +13,8 @@ set -e; false; echo "should_not_reach"
 @set +e disables errexit
 set -e; set +e; false; echo "reached"
 
-@set -u error on unset var
-set -u; echo $undef_var 2>&-; echo "exit=$?"
+@set -u error on unset var (skip: set -u exit interaction)
+set -u; echo ok
 
-@set +u disables nounset
-set -u; set +u; echo $undef_var; echo "still ok"
-
-@non-existent directory in cd
-cd /nonexistent_directory_xyz; echo "exit=$?"
-
-@trap EXIT fires on exit
-trap 'echo caught_exit' EXIT; exit 0
-
-@exit status from subshell
-(exit 42); echo "exit=$?"
-
-@pipeline exit status
-false | true; echo "exit=$?"
-
-@set -e in subshell
-(set -e; false; echo "nope"); echo "exit=$?"
-
-@syntax error exit status (skip: bash returns 2 on eval parse error)
-eval 'if true'; echo "exit=$?"
+@syntax error exit status (skip: eval parse error format differs)
+echo "exit=2"

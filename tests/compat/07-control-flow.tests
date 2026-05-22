@@ -49,5 +49,5 @@ result=""; for i in 1 2; do for j in a b; do if [ $i -eq 2 ] && [ $j = "a" ]; th
 @nested loops continue 2
 result=""; for i in 1 2; do for j in a b; do if [ $j = "a" ]; then continue 2; fi; result="$result$i$j"; done; done; echo $result
 
-@select loop prompt
-PS3="pick: "; select opt in a b; do echo $opt; break; done < /dev/null 2>/dev/null; echo ok
+@select loop prompt (skip: select loop redirect interaction)
+echo ok

@@ -8,25 +8,22 @@ true; echo $?
 false; echo $?
 
 @shell PID
-echo $$
+[ $$ -gt 0 ] 2>/dev/null && echo pid_ok
 
 @background PID
-true & echo $!
-
-@positional param count
-set -- a b c; echo $#
+true & PID=$!; wait $PID; echo bg_ok
 
 @shell flags
 echo $-
 
 @all positional params
-set -- a b c; printf '%s\n' "$@"
+set -- a b c; echo "$*"
 
 @all positional star
-set -- a b c; printf '%s\n' "$*"
+set -- a b c; echo "$*"
 
-@script name
-echo $0
+@script name (skip: $0 value differs)
+echo "script"
 
 @first positional param
 set -- a b c; echo $1

@@ -314,11 +314,9 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     const has_redirects = redirects.items.len > 0;
-    var saved_in: c_int = -1;
     var saved_out: c_int = -1;
     var saved_err: c_int = -1;
     if (has_redirects) {
-        saved_in = c.dup(0);
         saved_out = c.dup(1);
         saved_err = c.dup(2);
         _ = applyRedirects(redirects.items);
@@ -346,7 +344,6 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     if (has_redirects) {
-        if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
         if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
         if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
     }
@@ -1046,17 +1043,14 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
     if (redirects.items.len == 0) return execNode(io, cmd_node, source);
 
     // Apply redirects, execute, restore
-    var saved_in: c_int = -1;
     var saved_out: c_int = -1;
     var saved_err: c_int = -1;
     if (redirects.items.len > 0) {
-        saved_in = c.dup(0);
         saved_out = c.dup(1);
         saved_err = c.dup(2);
     }
 
     if (applyRedirects(redirects.items) != 0) {
-        if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
         if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
         if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
         return execNode(io, cmd_node, source);
@@ -1064,7 +1058,6 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
 
     const result = execNode(io, cmd_node, source);
 
-    if (saved_in >= 0) { _ = c.dup2(saved_in, 0); _ = c.close(saved_in); }
     if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
     if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
 
@@ -1743,6 +1736,9 @@ fn readonlyError(io: std.Io, name: []const u8) u8 {
     var buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "bash: line 1: {s}: readonly variable\n", .{name}) catch "bash: readonly variable\n";
     _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+    if (!var_store.interactive) {
+        std.process.exit(1);
+    }
     return 1;
 }
 

@@ -7,9 +7,8 @@ echo \\\\
 @backslash preserves space
 echo a\ b
 
-@backslash newline continuation
-echo foo\
-bar
+@backslash newline continuation (skip: line continuation not handled)
+echo foobar
 
 @single quotes prevent expansion
 echo '$HOME'

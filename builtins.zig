@@ -816,7 +816,14 @@ fn builtinJobs(io: std.Io, args: [][]const u8) u8 {
         } else "Running";
         const cmd = var_store.getJobCmd(pid) orelse "";
         var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "[{d}]+  {s: <20} {s}\n", .{i + 1, state_str, cmd}) catch continue;
+        var space_buf: [32]u8 = undefined;
+        @memset(space_buf[0..], ' ');
+        const pad = if (state_str.len < 28) 28 - state_str.len else 1;
+        const spaces = space_buf[0..pad];
+        const line = if (cmd.len > 0)
+            std.fmt.bufPrint(&buf, "[{d}]+  {s}{s}{s} &\n", .{i + 1, state_str, spaces, cmd}) catch continue
+        else
+            std.fmt.bufPrint(&buf, "[{d}]+  {s}\n", .{i + 1, state_str}) catch continue;
         _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
     }
     return 0;
