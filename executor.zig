@@ -334,6 +334,7 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
 
 fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     const count = parser.childCount(node);
+    const special_assign_builtins = comptime [_][]const u8{ "readonly", "declare", "typeset", "local", "export" };
     var expanded: std.ArrayListAligned([]const u8, null) = .empty;
     defer expanded.deinit(allocator);
 
@@ -411,7 +412,11 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
         }
 
-        if (expand.expandToken(allocator, raw)) |result| {
+        const expandResult = if (var_store.nounset)
+            expand.expandTokenSafe(allocator, raw)
+        else
+            expand.expandToken(allocator, raw);
+        if (expandResult) |result| {
             var list = result;
             defer list.deinit();
             for (list.words) |w| {
@@ -439,12 +444,28 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
         }
         // Process variable assignments
-        for (var_assign_nodes.items) |van| {
-            const s = execVarAssign(io, van, source);
-            if (s != 0) {
-                if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
-                if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
-                return s;
+        var cmd_is_assign_builtin = false;
+        if (expanded.items.len > 0) {
+            inline for (special_assign_builtins) |sb| {
+                if (std.mem.eql(u8, expanded.items[0], sb)) {
+                    cmd_is_assign_builtin = true;
+                }
+            }
+        }
+        if (cmd_is_assign_builtin) {
+            for (var_assign_nodes.items) |van| {
+                const raw = nodeText(van, source);
+                const dup = allocator.dupe(u8, raw) catch @panic("oom");
+                expanded.append(allocator, dup) catch @panic("oom");
+            }
+        } else {
+            for (var_assign_nodes.items) |van| {
+                const s = execVarAssign(io, van, source);
+                if (s != 0) {
+                    if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+                    if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+                    return s;
+                }
             }
         }
         if (expanded.items.len == 0) {
@@ -461,9 +482,25 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
 
     // Process variable assignments
     var assign_status: u8 = 0;
-    for (var_assign_nodes.items) |van| {
-        const s = execVarAssign(io, van, source);
-        if (s != 0) assign_status = s;
+    var cmd_is_assign_builtin = false;
+    if (expanded.items.len > 0) {
+        inline for (special_assign_builtins) |sb| {
+            if (std.mem.eql(u8, expanded.items[0], sb)) {
+                cmd_is_assign_builtin = true;
+            }
+        }
+    }
+    if (cmd_is_assign_builtin) {
+        for (var_assign_nodes.items) |van| {
+            const raw = nodeText(van, source);
+            const dup = allocator.dupe(u8, raw) catch @panic("oom");
+            expanded.append(allocator, dup) catch @panic("oom");
+        }
+    } else {
+        for (var_assign_nodes.items) |van| {
+            const s = execVarAssign(io, van, source);
+            if (s != 0) assign_status = s;
+        }
     }
 
     if (expanded.items.len == 0) return assign_status;
@@ -708,6 +745,8 @@ fn execFor(io: std.Io, node: NodeType, source: []const u8) u8 {
 
     var last_status: u8 = 0;
     if (is_select) {
+        // If stdin is a tty, show menu and accept input
+        // If stdin is not a tty (e.g., /dev/null), skip the select body
         const is_tty = c.isatty(0) != 0;
         if (is_tty) {
             const stdout = std.Io.File.stdout();
@@ -1198,13 +1237,11 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
 fn execArithmeticCmd(io: std.Io, node: NodeType, source: []const u8) u8 {
     _ = io;
     const count = parser.childCount(node);
-    // Collect text from unnamed children between (( and ))
     var expr_buf: [4096]u8 = undefined;
     var pos: usize = 0;
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
-        // Skip the (( and )) tokens
         if (std.mem.eql(u8, cname, "((") or std.mem.eql(u8, cname, "))")) continue;
         const text = nodeText(child, source);
         if (pos + text.len + 1 <= expr_buf.len) {
@@ -1217,7 +1254,48 @@ fn execArithmeticCmd(io: std.Io, node: NodeType, source: []const u8) u8 {
     if (expr_text.len == 0) return 0;
     const trimmed = std.mem.trim(u8, expr_text, " ");
 
-    // Check for variable assignment: name = expression
+    // Check for variable assignment with compound operators: name += expr, name -= expr, etc.
+    {
+        // Search for assignment operators: +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
+        const compound_ops = [_][]const u8{ "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "^=", "|=" };
+        inline for (compound_ops) |cop| {
+            if (std.mem.indexOf(u8, trimmed, cop)) |eq_pos| {
+                if (eq_pos > 0) {
+                    const name = std.mem.trim(u8, trimmed[0..eq_pos], " ");
+                    const rhs = std.mem.trim(u8, trimmed[eq_pos + cop.len ..], " ");
+                    if (name.len > 0) {
+                        // Also handle chained: (( i += 1 ))  -> the name is var, rest after += is expression
+                        // But the trimmed might be like "i+=1" or "i += 1"
+                        const cur_str = if (var_store.get(name)) |v| v.value else "0";
+                        const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+                        const rhs_val = evalArithmetic(allocator, rhs) orelse 0;
+                        const val = if (std.mem.eql(u8, cop, "+=")) cur_val + rhs_val
+                        else if (std.mem.eql(u8, cop, "-=")) cur_val - rhs_val
+                        else if (std.mem.eql(u8, cop, "*=")) cur_val * rhs_val
+                        else if (std.mem.eql(u8, cop, "/=")) (if (rhs_val == 0) 0 else @divTrunc(cur_val, rhs_val))
+                        else if (std.mem.eql(u8, cop, "%=")) (if (rhs_val == 0) 0 else @mod(cur_val, rhs_val))
+                        else if (std.mem.eql(u8, cop, "<<=")) cur_val << @as(u6, @intCast(rhs_val))
+                        else if (std.mem.eql(u8, cop, ">>=")) cur_val >> @as(u6, @intCast(rhs_val))
+                        else if (std.mem.eql(u8, cop, "&=")) cur_val & rhs_val
+                        else if (std.mem.eql(u8, cop, "^=")) cur_val ^ rhs_val
+                        else if (std.mem.eql(u8, cop, "|=")) cur_val | rhs_val
+                        else 0;
+                        var vbuf: [32]u8 = undefined;
+                        const val_str = std.fmt.bufPrint(&vbuf, "{d}", .{val}) catch "0";
+                        _ = var_store.set(name, val_str, false);
+                        const is_zero = (val == 0);
+                        const exit_val: u8 = if (is_zero) 1 else 0;
+                        var qbuf: [16]u8 = undefined;
+                        const s = std.fmt.bufPrint(&qbuf, "{d}", .{exit_val}) catch "0";
+                        _ = var_store.set("?", s, false);
+                        return exit_val;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for simple variable assignment: name = expression
     if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq| {
         if (eq > 0 and trimmed[eq-1] != '=' and trimmed[eq-1] != '!' and
             trimmed[eq-1] != '<' and trimmed[eq-1] != '>' and
@@ -1637,28 +1715,58 @@ pub fn resolveIntExpr(alloc: std.mem.Allocator, expr: []const u8) ?i64 {
     return null;
 }
 
+fn readonlyError(io: std.Io, name: []const u8) u8 {
+    var buf: [4096]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "bash: {s}: readonly variable\n", .{name}) catch "bash: readonly variable\n";
+    _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+    // In non-interactive mode, readonly assignment error is fatal (bash behavior)
+    if (!var_store.interactive) {
+        std.process.exit(1);
+    }
+    return 1;
+}
+
+fn trySetVarFromExpansion(io: std.Io, name: []const u8, value: []const u8) u8 {
+    if (var_store.isReadonly(name)) {
+        return readonlyError(io, name);
+    }
+    if (!var_store.setLocal(name, value, false)) {
+        return readonlyError(io, name);
+    }
+    return 0;
+}
+
 fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
-    _ = io;
     const text = nodeText(node, source);
     if (std.mem.indexOfScalar(u8, text, '=')) |eq| {
-        var name = text[0..eq];
+        const name = text[0..eq];
         const value = text[eq + 1 ..];
+
+        // If the variable has the integer attribute, evaluate value as arithmetic expression
+        if (hasIntegerAttr(name)) {
+            const expanded_val = expandBareVars(allocator, value);
+            defer allocator.free(expanded_val);
+            if (expand.evalArithmeticFromStr(allocator, expanded_val) catch null) |v| {
+                var vbuf: [64]u8 = undefined;
+                const vstr = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch expanded_val;
+                return trySetVarFromExpansion(io, name, vstr);
+            }
+        }
 
         // Handle += operator (append/add)
         if (name.len > 1 and name[name.len - 1] == '+') {
             const real_name = name[0 .. name.len - 1];
+            if (var_store.isReadonly(real_name)) return readonlyError(io, real_name);
             const cur_val = if (var_store.get(real_name)) |v| v.value else "0";
             const expanded_val = if (expand.expandToken(allocator, value)) |res| blk: {
                 var list = res;
                 defer list.deinit();
-                break :blk if (list.words.len > 0) list.words[0] else "";
+                break :blk if (list.words.len > 0) (allocator.dupe(u8, list.words[0]) catch "") else "";
             } else |_| value;
-            // Try arithmetic: cur_val + expanded_val
             const expr = std.fmt.allocPrint(allocator, "{s}+{s}", .{ cur_val, expanded_val }) catch {
                 const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
                 defer allocator.free(new_val);
-                if (!var_store.setLocal(real_name, new_val, false)) return 1;
-                return 0;
+                return trySetVarFromExpansion(io, real_name, new_val);
             };
             defer allocator.free(expr);
             if (expand.evalArithmeticFromStr(allocator, expr) catch null) |v| {
@@ -1666,16 +1774,13 @@ fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
                 const vstr = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch {
                     const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
                     defer allocator.free(new_val);
-                    if (!var_store.setLocal(real_name, new_val, false)) return 1;
-                    return 0;
+                    return trySetVarFromExpansion(io, real_name, new_val);
                 };
-                if (!var_store.setLocal(real_name, vstr, false)) return 1;
-                return 0;
+                return trySetVarFromExpansion(io, real_name, vstr);
             }
             const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
             defer allocator.free(new_val);
-            if (!var_store.setLocal(real_name, new_val, false)) return 1;
-            return 0;
+            return trySetVarFromExpansion(io, real_name, new_val);
         }
 
         // Pre-expand bare $var references
@@ -1686,31 +1791,21 @@ fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
             var result = res;
             defer result.deinit();
             if (result.words.len > 0) {
-                if (!var_store.setLocal(name, result.words[0], false)) {
-                    return 1;
-                }
+                return trySetVarFromExpansion(io, name, result.words[0]);
             } else {
-                if (!var_store.setLocal(name, "", false)) {
-                    return 1;
-                }
+                return trySetVarFromExpansion(io, name, "");
             }
         } else |_| {
             if (expand.expandTokenSafe(allocator, expanded_value)) |res2| {
                 var result2 = res2;
                 defer result2.deinit();
                 if (result2.words.len > 0) {
-                    if (!var_store.setLocal(name, result2.words[0], false)) {
-                        return 1;
-                    }
+                    return trySetVarFromExpansion(io, name, result2.words[0]);
                 } else {
-                    if (!var_store.setLocal(name, "", false)) {
-                        return 1;
-                    }
+                    return trySetVarFromExpansion(io, name, "");
                 }
             } else |_| {
-                if (!var_store.setLocal(name, expanded_value, false)) {
-                    return 1;
-                }
+                return trySetVarFromExpansion(io, name, expanded_value);
             }
         }
     }
@@ -1902,7 +1997,35 @@ fn globMatch(text: []const u8, pattern: []const u8) bool {
     var star_ti: ?usize = null;
 
     while (ti < text.len) {
-        if (pi < pattern.len and (pattern[pi] == text[ti] or pattern[pi] == '?')) {
+        if (pi < pattern.len and pattern[pi] == '[') {
+            const bracket_end = findBracketEnd(pattern, pi);
+            if (bracket_end) |be| {
+                const char_class = pattern[pi + 1 .. be];
+                const ch = text[ti];
+                if (matchBracketChar(ch, char_class)) {
+                    ti += 1;
+                    pi = be + 1;
+                } else if (star_pi) |sp| {
+                    pi = sp + 1;
+                    star_ti.? += 1;
+                    ti = star_ti.?;
+                } else {
+                    return false;
+                }
+            } else {
+                // Malformed bracket, treat as literal
+                if (pattern[pi] == text[ti]) {
+                    ti += 1;
+                    pi += 1;
+                } else if (star_pi) |sp| {
+                    pi = sp + 1;
+                    star_ti.? += 1;
+                    ti = star_ti.?;
+                } else {
+                    return false;
+                }
+            }
+        } else if (pi < pattern.len and (pattern[pi] == text[ti] or pattern[pi] == '?')) {
             ti += 1;
             pi += 1;
         } else if (pi < pattern.len and pattern[pi] == '*') {
@@ -1925,14 +2048,59 @@ fn globMatch(text: []const u8, pattern: []const u8) bool {
     return pi == pattern.len;
 }
 
+fn findBracketEnd(pattern: []const u8, start: usize) ?usize {
+    if (start + 1 >= pattern.len) return null;
+    var i = start + 1;
+    if (i < pattern.len and (pattern[i] == '!' or pattern[i] == '^')) {
+        i += 1;
+    }
+    while (i < pattern.len) {
+        if (pattern[i] == ']') return i;
+        i += 1;
+    }
+    return null;
+}
+
+fn matchBracketChar(ch: u8, class: []const u8) bool {
+    if (class.len == 0) return false;
+    var negate = false;
+    var pos: usize = 0;
+    if (class[pos] == '!' or class[pos] == '^') {
+        negate = true;
+        pos += 1;
+    }
+
+    var result = false;
+    while (pos < class.len) {
+        if (pos + 2 < class.len and class[pos + 1] == '-') {
+            const lo = class[pos];
+            const hi = class[pos + 2];
+            if (ch >= lo and ch <= hi) {
+                result = true;
+                break;
+            }
+            pos += 3;
+        } else {
+            if (class[pos] == ch) {
+                result = true;
+                break;
+            }
+            pos += 1;
+        }
+    }
+
+    return if (negate) !result else result;
+}
+
 fn execBuiltinEval(io: std.Io, source: []const u8, args: [][]const u8) u8 {
     _ = source;
     if (args.len < 2) return 0;
     // Concatenate arguments with spaces
     var total_len: usize = 0;
     for (args[1..]) |a| {
-        total_len += a.len + 1;
+        total_len +|= a.len + 1;
     }
+    if (total_len == 0) return 0;
     const cmd = allocator.alloc(u8, total_len) catch @panic("oom");
     defer allocator.free(cmd);
     var pos: usize = 0;
@@ -2020,8 +2188,8 @@ fn execFnDef(io: std.Io, node: NodeType, source: []const u8) u8 {
 
 fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
-    // Scan for flags (-i, -r, -x, -a, -A) among the words
     var flags: u32 = 0;
+    var cmd_name: ?[]const u8 = null;
     const count = parser.childCount(node);
     for (0..count) |i| {
         const child = parser.childAt(node, i);
@@ -2038,6 +2206,16 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
                         'A' => flags |= 2,
                         else => {},
                     }
+                }
+            }
+        }
+        // Check if this is a declaration keyword (unnamed child)
+        if (cmd_name == null) {
+            const raw = nodeText(child, source);
+            const declare_keywords = comptime [_][]const u8{ "declare", "typeset", "local", "export", "readonly" };
+            inline for (declare_keywords) |kw| {
+                if (std.mem.eql(u8, raw, kw)) {
+                    cmd_name = raw;
                 }
             }
         }
@@ -2068,26 +2246,38 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
         return 0;
     }
+    // If we have a declaration command name (declare/typeset/local/export/readonly),
+    // build the words list and run the builtin
+    if (cmd_name) |name| {
+        var words: std.ArrayListAligned([]const u8, null) = .empty;
+        defer words.deinit(allocator);
+        // First add the command name itself
+        words.append(allocator, allocator.dupe(u8, name) catch @panic("oom")) catch @panic("oom");
+        // Then add flags and assignments
+        for (0..count) |i| {
+            const child = parser.childAt(node, i);
+            const cname = nodeName(child);
+            const raw = nodeText(child, source);
+            if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "variable_assignment")) {
+                // Skip if it's the name itself
+                if (std.mem.eql(u8, raw, name)) continue;
+                const dup = allocator.dupe(u8, raw) catch @panic("oom");
+                words.append(allocator, dup) catch @panic("oom");
+            }
+        }
+        if (words.items.len > 0) {
+            return builtins.run(io, words.items[0], words.items);
+        }
+    }
+    // Fallback: process children individually
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
-        if (std.mem.eql(u8, cname, "word") and flags == 0) {
-            var words: std.ArrayListAligned([]const u8, null) = .empty;
-            defer words.deinit(allocator);
-            for (0..count) |j| {
-                const c2 = parser.childAt(node, j);
-                const c2name = nodeName(c2);
-                if (std.mem.eql(u8, c2name, "variable_assignment") or std.mem.eql(u8, c2name, "word")) {
-                    const raw2 = nodeText(c2, source);
-                    const dup2 = allocator.dupe(u8, raw2) catch @panic("oom");
-                    words.append(allocator, dup2) catch @panic("oom");
-                }
-            }
-            if (words.items.len > 0) {
-                return builtins.run(io, words.items[0], words.items);
+        if (std.mem.eql(u8, cname, "variable_assignment") or std.mem.eql(u8, cname, "word")) {
+            if (cmd_name == null) {
+                last = execNode(io, child, source);
             }
         }
-        last = execNode(io, child, source);
     }
     return last;
 }

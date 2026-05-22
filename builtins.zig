@@ -431,8 +431,29 @@ extern "c" fn waitpid(pid: c_int, wstatus: *c_int, options: c_int) c_int;
 fn builtinExit(io: std.Io, args: [][]const u8) u8 {
     _ = io;
     const status = if (args.len > 1) (std.fmt.parseInt(u8, args[1], 10) catch 0) else var_store.getExitStatus();
-    // Signal to the executor that we want to exit
-    // The executor will fire EXIT trap in its exec() function
+
+    // Fire EXIT trap before exiting
+    if (getTrap("EXIT")) |cmd| {
+        if (cmd.len > 0) {
+            const cmd_z = var_store.getAllocator().dupeZ(u8, cmd) catch {
+                std.process.exit(status);
+            };
+            defer var_store.getAllocator().free(cmd_z);
+            const pid = c.fork();
+            if (pid == 0) {
+                const sh_str: [:0]const u8 = "/bin/sh";
+                const c_str: [:0]const u8 = "-c";
+                var args_arr = [_]?[*:0]u8{ @ptrCast(@constCast(sh_str.ptr)), @ptrCast(@constCast(c_str.ptr)), @ptrCast(cmd_z.ptr), null };
+                _ = c.execvp(@ptrCast(@constCast(sh_str.ptr)), @ptrCast(&args_arr));
+                c._exit(127);
+            }
+            if (pid > 0) {
+                var wstatus: c_int = 0;
+                _ = c.waitpid(pid, &wstatus, 0);
+            }
+        }
+    }
+
     std.process.exit(status);
 }
 
@@ -784,8 +805,17 @@ fn builtinJobs(io: std.Io, args: [][]const u8) u8 {
     _ = args;
     const stdout = std.Io.File.stdout();
     for (var_store.getJobs(), 0..) |pid, i| {
+        var wstatus: c_int = 0;
+        const rc = waitpid(@as(c_int, @intCast(pid)), &wstatus, c.WNOHANG);
+        const state_str = if (rc == pid) blk: {
+            if (c.WIFEXITED(@as(c_int, @intCast(wstatus)))) {
+                var_store.removeJob(pid);
+                break :blk "Done";
+            }
+            break :blk "Running";
+        } else "Running";
         var buf: [128]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "[{d}] {d}\n", .{i + 1, pid}) catch continue;
+        const line = std.fmt.bufPrint(&buf, "[{d}]+  {s}\n", .{i + 1, state_str}) catch continue;
         _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
     }
     return 0;
@@ -1016,18 +1046,45 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
                 'i' => flags |= 4,
                 'r' => flags |= 8,
                 'x' => flags |= 16,
+                'p' => flags |= 32,
                 else => {},
             }
         }
         var_start += 1;
     }
+
+    // Handle -p flag: print variable attributes
+    if (flags & 32 != 0) {
+        const stdout = std.Io.File.stdout();
+        if (var_start >= args.len) {
+            // -p with no args: print all variables (like bare declare)
+            for (var_store.allVars()) |v| {
+                var buf: [4096]u8 = undefined;
+                const attr = if (var_store.isReadonly(v.name)) "declare -r" else if (var_store.hasIntVar(v.name)) "declare -i" else "declare --";
+                const line = std.fmt.bufPrint(&buf, "{s} {s}=\"{s}\"\n", .{attr, v.name, v.value}) catch continue;
+                _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+            }
+        } else {
+            for (args[var_start..]) |arg| {
+                if (var_store.get(arg)) |v| {
+                    var buf: [4096]u8 = undefined;
+                    const attr = if (var_store.isReadonly(arg)) "declare -r" else if (var_store.hasIntVar(arg)) "declare -i" else "declare --";
+                    const line = std.fmt.bufPrint(&buf, "{s} {s}=\"{s}\"\n", .{attr, arg, v.value}) catch continue;
+                    _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+                }
+            }
+        }
+        return 0;
+    }
+
     for (args[var_start..]) |arg| {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
             var val = arg[eq+1..];
             if (flags & 4 != 0 and val.len > 0) {
-                if (executor.resolveIntExpr(std.heap.page_allocator, val)) |v| {
-                    var vbuf: [32]u8 = undefined;
+                // For -i flag, evaluate as arithmetic expression
+                if (builtinLetEvalArithmetic(val)) |v| {
+                    var vbuf: [64]u8 = undefined;
                     val = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch val;
                 }
             }
@@ -1042,8 +1099,6 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             if (flags & 4 != 0) {
                 var_store.setIntVar(name, true);
             }
-            if (flags & 1 != 0) {}
-            if (flags & 2 != 0) {}
         } else {
             if (flags & 16 != 0) {
                 var_store.setExport(arg, true);
@@ -1057,6 +1112,27 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
         }
     }
     return 0;
+}
+
+fn builtinLetEvalArithmetic(expr: []const u8) ?i64 {
+    if (std.fmt.parseInt(i64, expr, 10)) |val| return val else |_| {}
+    // Handle simple arithmetic expressions like 5+3
+    var full_buf: [4096]u8 = undefined;
+    if (expr.len + 7 > full_buf.len) return null;
+    full_buf[0] = '$';
+    full_buf[1] = '(';
+    full_buf[2] = '(';
+    @memcpy(full_buf[3..][0..expr.len], expr);
+    full_buf[3 + expr.len] = ')';
+    full_buf[4 + expr.len] = ')';
+    const full = full_buf[0 .. 5 + expr.len];
+    if (expand.expandToken(std.heap.page_allocator, full)) |result| {
+        defer result.deinit();
+        if (result.words.len > 0) {
+            return std.fmt.parseInt(i64, result.words[0], 10) catch null;
+        }
+    } else |_| {}
+    return null;
 }
 
 fn builtinDirs(io: std.Io, args: [][]const u8) u8 {
