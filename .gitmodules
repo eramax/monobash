@@ -1,0 +1,3 @@
+[submodule "deps/coreutils"]
+	path = deps/coreutils
+	url = /mnt/mydata/projects2/0/coreutils
