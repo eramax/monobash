@@ -3,6 +3,7 @@ const var_store = @import("var.zig");
 
 const c = @cImport({
     @cInclude("wordexp.h");
+    @cInclude("unistd.h");
 });
 
 pub const WordExpError = error{
@@ -85,7 +86,9 @@ pub fn expandToken(allocator: std.mem.Allocator, raw: []const u8) WordExpError!W
 
     const substituted = try expandPositional(allocator, with_ansi);
     defer allocator.free(substituted);
-    const raw_z = try allocator.dupeZ(u8, substituted);
+    const expanded_params = try expandParamExpansion(allocator, substituted);
+    defer allocator.free(expanded_params);
+    const raw_z = try allocator.dupeZ(u8, expanded_params);
     defer allocator.free(raw_z);
     return expandRaw(allocator, raw_z, 0);
 }
@@ -296,6 +299,434 @@ fn expandPositional(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     }
     return result.toOwnedSlice(allocator);
 }
+fn isFirstParamChar(ch: u8) bool {
+    const r = switch (ch) {
+        '?', '!', '-', '$', '@', '*', '#', '0' => true,
+        '1'...'9' => true,
+        else => std.ascii.isAlphabetic(ch) or ch == '_',
+    };
+    return r;
+}
+
+fn skipParamName(s: []const u8, pos: usize) usize {
+    if (pos >= s.len) return pos;
+    switch (s[pos]) {
+        '?', '!', '-', '$', '@', '*', '#', '0' => return pos + 1,
+        '1'...'9' => return pos + 1,
+        else => {
+            if (std.ascii.isAlphabetic(s[pos]) or s[pos] == '_') {
+                var i = pos + 1;
+                while (i < s.len and (std.ascii.isAlphanumeric(s[i]) or s[i] == '_')) : (i += 1) {}
+                return i;
+            }
+            return pos;
+        },
+    }
+}
+
+fn writeStderr(msg: []const u8) void {
+    _ = c.write(2, msg.ptr, @as(usize, msg.len));
+}
+
+fn getSimpleVarValue(name: []const u8) ?[]const u8 {
+    if (name.len == 1) {
+        switch (name[0]) {
+            '?', '!', '$', '@', '*', '#', '-', '0' => return var_store.getSpecial(name[0]),
+            '1'...'9' => return var_store.getPositionalValue(name[0] - '1'),
+            else => {},
+        }
+    }
+    if (var_store.get(name)) |v| return v.value;
+    return null;
+}
+
+fn expandParamExpansion(allocator: std.mem.Allocator, raw: []const u8) WordExpError![]u8 {
+    var result = std.ArrayListAligned(u8, null).empty;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '\\' and i + 1 < raw.len) {
+            try result.append(allocator, raw[i]);
+            try result.append(allocator, raw[i + 1]);
+            i += 2;
+            continue;
+        }
+        if (raw[i] == '$' and i + 1 < raw.len and raw[i + 1] == '{') {
+            var depth: usize = 1;
+            var j = i + 2;
+            while (j < raw.len and depth > 0) : (j += 1) {
+                if (raw[j] == '{') depth += 1;
+                if (raw[j] == '}') depth -= 1;
+            }
+            if (depth == 0) {
+                const close = j - 1;
+                const inner = raw[i + 2 .. close];
+                const expanded = try handleParamInner(allocator, inner);
+                try result.appendSlice(allocator, expanded);
+                allocator.free(expanded);
+                i = close + 1;
+            } else {
+                try result.append(allocator, raw[i]);
+                i += 1;
+            }
+        } else {
+            try result.append(allocator, raw[i]);
+            i += 1;
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn handleParamInner(allocator: std.mem.Allocator, content: []const u8) WordExpError![]u8 {
+    if (content.len == 0) return error.Syntax;
+
+    var pos: usize = 0;
+
+    var bang = false;
+    if (content[pos] == '!') {
+        bang = true;
+        pos += 1;
+    }
+
+    if (bang) {
+        if (pos < content.len) {
+            const prefix_start = pos;
+            var prefix_end = prefix_start;
+            while (prefix_end < content.len and content[prefix_end] != '*' and content[prefix_end] != '@') : (prefix_end += 1) {}
+            if (prefix_end < content.len and (content[prefix_end] == '*' or content[prefix_end] == '@')) {
+                const prefix = content[prefix_start..prefix_end];
+                return handleMatchingPrefix(allocator, prefix);
+            }
+            if (isFirstParamChar(content[pos])) {
+                const name = content[pos..];
+                return handleSimpleIndirect(allocator, name);
+            }
+        }
+        return error.Syntax;
+    }
+
+    var hash = false;
+    if (pos < content.len and content[pos] == '#') {
+        if (pos + 1 < content.len and isFirstParamChar(content[pos + 1])) {
+            hash = true;
+            pos += 1;
+        }
+    }
+
+    const name_start = pos;
+    pos = skipParamName(content, pos);
+    if (pos == name_start) return error.Syntax;
+    const name = content[name_start..pos];
+
+    if (hash) {
+        const val = getSimpleVarValue(name) orelse "";
+        var buf: [32]u8 = undefined;
+        const len_str = std.fmt.bufPrint(&buf, "{d}", .{val.len}) catch "0";
+        return allocator.dupe(u8, len_str);
+    }
+
+    if (pos >= content.len) {
+        if (var_store.get(name)) |v| {
+            return allocator.dupe(u8, v.value);
+        }
+        if (name.len == 1) {
+            switch (name[0]) {
+                '?', '!', '-', '$', '@', '*', '#', '0' => {
+                    const val = var_store.getSpecial(name[0]);
+                    return allocator.dupe(u8, val);
+                },
+                '1'...'9' => {
+                    const val = var_store.getPositionalValue(name[0] - '1');
+                    return allocator.dupe(u8, val);
+                },
+                else => {},
+            }
+        }
+        if (var_store.nounset) {
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "bash: {s}: unbound variable\n", .{name}) catch "bash: unbound variable\n";
+            writeStderr(msg);
+            return error.UndefinedVar;
+        }
+        return allocator.dupe(u8, "");
+    }
+
+    if (content[pos] == ':') {
+        pos += 1;
+        if (pos >= content.len) {
+            if (var_store.get(name)) |v| return allocator.dupe(u8, v.value);
+            return allocator.dupe(u8, "");
+        }
+        switch (content[pos]) {
+            '-', '=', '?', '+' => {
+                const op = content[pos];
+                pos += 1;
+                const word = content[pos..];
+                return handleOpWithColon(allocator, name, op, word, true);
+            },
+            else => {
+                const substr_spec = content[pos..];
+                return handleSubstring(allocator, name, substr_spec);
+            },
+        }
+    }
+
+    switch (content[pos]) {
+        '-' => {
+            pos += 1;
+            return handleOpWithColon(allocator, name, '-', content[pos..], false);
+        },
+        '=' => {
+            pos += 1;
+            return handleOpWithColon(allocator, name, '=', content[pos..], false);
+        },
+        '?' => {
+            pos += 1;
+            return handleOpWithColon(allocator, name, '?', content[pos..], false);
+        },
+        '+' => {
+            pos += 1;
+            return handleOpWithColon(allocator, name, '+', content[pos..], false);
+        },
+        '/' => {
+            pos += 1;
+            var global = false;
+            if (pos < content.len and content[pos] == '/') {
+                global = true;
+                pos += 1;
+            }
+            const rest = content[pos..];
+            return handlePatternReplace(allocator, name, rest, global);
+        },
+        '#' => {
+            pos += 1;
+            var long = false;
+            if (pos < content.len and content[pos] == '#') {
+                long = true;
+                pos += 1;
+            }
+            const pattern = content[pos..];
+            return handlePrefixRemove(allocator, name, pattern, long);
+        },
+        '%' => {
+            pos += 1;
+            var long = false;
+            if (pos < content.len and content[pos] == '%') {
+                long = true;
+                pos += 1;
+            }
+            const pattern = content[pos..];
+            return handleSuffixRemove(allocator, name, pattern, long);
+        },
+        else => return error.Syntax,
+    }
+}
+
+fn handleOpWithColon(allocator: std.mem.Allocator, name: []const u8, op: u8, word: []const u8, colon: bool) WordExpError![]u8 {
+    const val = var_store.get(name);
+
+    switch (op) {
+        '-' => {
+            var use_default = false;
+            if (val == null) {
+                use_default = true;
+            } else if (colon and val.?.value.len == 0) {
+                use_default = true;
+            }
+            if (use_default) {
+                const expanded = try expandParamExpansion(allocator, word);
+                return expanded;
+            }
+            return allocator.dupe(u8, val.?.value);
+        },
+        '=' => {
+            var use_default = false;
+            if (val == null) {
+                use_default = true;
+            } else if (colon and val.?.value.len == 0) {
+                use_default = true;
+            }
+            if (use_default) {
+                const expanded = try expandParamExpansion(allocator, word);
+                _ = var_store.set(name, expanded, false);
+                return expanded;
+            }
+            return allocator.dupe(u8, val.?.value);
+        },
+        '?' => {
+            var is_error = false;
+            if (val == null) {
+                is_error = true;
+            } else if (colon and val.?.value.len == 0) {
+                is_error = true;
+            }
+            if (is_error) {
+                var msg_buf: [4096]u8 = undefined;
+                const msg = if (word.len > 0)
+                    std.fmt.bufPrint(&msg_buf, "bash: {s}: {s}\n", .{ name, word }) catch "bash: parameter error\n"
+                else
+                    std.fmt.bufPrint(&msg_buf, "bash: {s}: parameter null or not set\n", .{name}) catch "bash: parameter error\n";
+                writeStderr(msg);
+                return error.UndefinedVar;
+            }
+            return allocator.dupe(u8, val.?.value);
+        },
+        '+' => {
+            var show_alt = false;
+            if (val != null) {
+                if (!colon) {
+                    show_alt = true;
+                } else if (val.?.value.len > 0) {
+                    show_alt = true;
+                }
+            }
+            if (show_alt) {
+                const expanded = try expandParamExpansion(allocator, word);
+                return expanded;
+            }
+            return allocator.dupe(u8, "");
+        },
+        else => unreachable,
+    }
+}
+
+fn handleSubstring(allocator: std.mem.Allocator, name: []const u8, spec: []const u8) ![]u8 {
+    if (var_store.get(name)) |v| {
+        const val = v.value;
+        if (val.len == 0) return allocator.dupe(u8, "");
+
+        const trimmed = std.mem.trim(u8, spec, " ");
+        if (trimmed.len == 0) return allocator.dupe(u8, val);
+
+        var offset_str: []const u8 = trimmed;
+        var length_str: ?[]const u8 = null;
+
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon_pos| {
+            offset_str = trimmed[0..colon_pos];
+            length_str = trimmed[colon_pos + 1 ..];
+        }
+
+        const offset = std.fmt.parseInt(i64, std.mem.trim(u8, offset_str, " "), 10) catch 0;
+        const length = if (length_str) |ls|
+            std.fmt.parseInt(i64, std.mem.trim(u8, ls, " "), 10) catch null
+        else
+            null;
+
+        const val_len = @as(i64, @intCast(val.len));
+        var start: i64 = if (offset >= 0) offset else val_len + offset;
+        if (start < 0) start = 0;
+
+        if (start >= val_len) return allocator.dupe(u8, "");
+
+        var end: i64 = val_len;
+        if (length) |len| {
+            if (len >= 0) {
+                end = start + len;
+            } else {
+                end = start;
+            }
+        }
+        if (end > val_len) end = val_len;
+        if (end <= start) return allocator.dupe(u8, "");
+
+        return allocator.dupe(u8, val[@as(usize, @intCast(start))..@as(usize, @intCast(end))]);
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn handlePatternReplace(allocator: std.mem.Allocator, name: []const u8, rest: []const u8, global: bool) ![]u8 {
+    if (var_store.get(name)) |v| {
+        const val = v.value;
+
+        var slash_pos: ?usize = null;
+        for (rest, 0..) |ch, j| {
+            if (ch == '/') {
+                slash_pos = j;
+                break;
+            }
+        }
+
+        const pattern = if (slash_pos) |sp| rest[0..sp] else rest;
+        const replacement = if (slash_pos) |sp| rest[sp + 1 ..] else "";
+
+        if (pattern.len == 0) return allocator.dupe(u8, val);
+
+        var result = std.ArrayListAligned(u8, null).empty;
+        var ii: usize = 0;
+        var did_replace = false;
+
+        while (ii < val.len) {
+            if ((!global and !did_replace) or global) {
+                if (std.mem.indexOf(u8, val[ii..], pattern)) |pos| if (pos == 0) {
+                    try result.appendSlice(allocator, replacement);
+                    ii += pattern.len;
+                    did_replace = true;
+                    if (!global) {
+                        try result.appendSlice(allocator, val[ii..]);
+                        return result.toOwnedSlice(allocator);
+                    }
+                    continue;
+                };
+            }
+            try result.append(allocator, val[ii]);
+            ii += 1;
+        }
+        return result.toOwnedSlice(allocator);
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn handlePrefixRemove(allocator: std.mem.Allocator, name: []const u8, pattern: []const u8, _: bool) ![]u8 {
+    if (var_store.get(name)) |v| {
+        const val = v.value;
+        if (val.len == 0 or pattern.len == 0) return allocator.dupe(u8, val);
+        if (std.mem.startsWith(u8, val, pattern)) {
+            return allocator.dupe(u8, val[pattern.len..]);
+        }
+        return allocator.dupe(u8, val);
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn handleSuffixRemove(allocator: std.mem.Allocator, name: []const u8, pattern: []const u8, _: bool) ![]u8 {
+    if (var_store.get(name)) |v| {
+        const val = v.value;
+        if (val.len == 0 or pattern.len == 0) return allocator.dupe(u8, val);
+        if (std.mem.endsWith(u8, val, pattern)) {
+            return allocator.dupe(u8, val[0 .. val.len - pattern.len]);
+        }
+        return allocator.dupe(u8, val);
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn handleSimpleIndirect(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    if (name.len == 0) return allocator.dupe(u8, "");
+    if (var_store.get(name)) |v| {
+        if (v.value.len == 0) return allocator.dupe(u8, "");
+        if (var_store.get(v.value)) |v2| {
+            return allocator.dupe(u8, v2.value);
+        }
+        return allocator.dupe(u8, "");
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn handleMatchingPrefix(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
+    const all_vars = var_store.allVars();
+    var matching = std.ArrayListAligned(u8, null).empty;
+
+    for (all_vars) |v| {
+        if (std.mem.startsWith(u8, v.name, prefix)) {
+            if (matching.items.len > 0) try matching.append(allocator, ' ');
+            try matching.appendSlice(allocator, v.name);
+        }
+    }
+
+    return matching.toOwnedSlice(allocator);
+}
+
+
+
 
 pub fn expandTokenSafe(allocator: std.mem.Allocator, raw: []const u8) WordExpError!WordList {
     const cleaned = try stripLineContinuation(allocator, raw);

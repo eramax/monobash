@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, prog_name, "sh");
 
     if (!is_shell) {
-        std.debug.print("monobash: {s}: command not found\n", .{prog_name});
+        std.debug.print("bash: {s}: command not found\n", .{prog_name});
         std.process.exit(127);
     }
 
@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
     executor.init(arena);
 
     if (args.len >= 3 and std.mem.eql(u8, args[1], "-c")) {
+        var_store.command_flag = true;
         const cmd = args[2];
         const tree = parser.parseString(cmd) orelse {
             const msg = "parse error\n";
@@ -51,7 +52,7 @@ pub fn main(init: std.process.Init) !void {
         };
 
         var_store.setPositional(arena, &.{});
-        var_store.set("0", path, false);
+        _ = var_store.set("0", path, false);
 
         // Skip shebang line if it starts with #!
         const script = if (std.mem.startsWith(u8, content, "#!"))

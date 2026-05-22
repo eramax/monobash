@@ -22,6 +22,7 @@ pub var errexit: bool = false;
 pub var nounset: bool = false;
 pub var pipefail: bool = false;
 pub var interactive: bool = false;
+pub var command_flag: bool = false;
 
 pub fn init(allocator: std.mem.Allocator) void {
     global_arena = std.heap.ArenaAllocator.init(allocator);
@@ -46,52 +47,52 @@ pub fn init(allocator: std.mem.Allocator) void {
 
     // Get HOME via C getenv
     const home = c_getenv("HOME") orelse "/";
-    set("IFS", " \t\n", false);
+    _ = set("IFS", " \t\n", false);
     const path = c_getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
-    set("PATH", path, false);
-    set("HOME", home, false);
+    _ = set("PATH", path, false);
+    _ = set("HOME", home, false);
 
     // Standard bash special variables
-    set("BASH_SUBSHELL", "0", false);
+    _ = set("BASH_SUBSHELL", "0", false);
     var pid_buf: [16]u8 = undefined;
     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{@as(c_int, getpid())}) catch "0";
-    set("BASHPID", pid_str, false);
+    _ = set("BASHPID", pid_str, false);
 
     // Bash compatibility variables
-    set("BASH_VERSION", "5.2.37(1)-monobash", false);
-    set("SECONDS", "0", false);
+    _ = set("BASH_VERSION", "5.2.37(1)-monobash", false);
+    _ = set("SECONDS", "0", false);
 
     // RANDOM — generate a random value 0-32767
     var random_buf: [16]u8 = undefined;
     var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(time(null))) +% @as(u64, @intCast(getpid())));
     const random_val = prng.random().int(u16) & 0x7FFF;
     const random_str = std.fmt.bufPrint(&random_buf, "{d}", .{random_val}) catch "0";
-    set("RANDOM", random_str, false);
+    _ = set("RANDOM", random_str, false);
 
     // UID, EUID, PPID
     var uid_buf: [16]u8 = undefined;
     const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{getuid()}) catch "0";
-    set("UID", uid_str, false);
+    _ = set("UID", uid_str, false);
 
     var euid_buf: [16]u8 = undefined;
     const euid_str = std.fmt.bufPrint(&euid_buf, "{d}", .{geteuid()}) catch "0";
-    set("EUID", euid_str, false);
+    _ = set("EUID", euid_str, false);
 
     var ppid_buf: [16]u8 = undefined;
     const ppid_str = std.fmt.bufPrint(&ppid_buf, "{d}", .{getppid()}) catch "0";
-    set("PPID", ppid_str, false);
+    _ = set("PPID", ppid_str, false);
 
     // HOSTNAME — try environment first, fallback to gethostname()
     const hostname_env = c_getenv("HOSTNAME");
     if (hostname_env) |h| {
-        set("HOSTNAME", h, false);
+        _ = set("HOSTNAME", h, false);
     } else {
         var hostname_buf: [256]u8 = undefined;
         if (gethostname(&hostname_buf, hostname_buf.len) == 0) {
             const len = std.mem.indexOfScalar(u8, &hostname_buf, 0) orelse hostname_buf.len;
-            set("HOSTNAME", hostname_buf[0..len], false);
+            _ = set("HOSTNAME", hostname_buf[0..len], false);
         } else {
-            set("HOSTNAME", "localhost", false);
+            _ = set("HOSTNAME", "localhost", false);
         }
     }
 
@@ -100,15 +101,15 @@ pub fn init(allocator: std.mem.Allocator) void {
     const parent_shlvl = c_getenv("SHLVL") orelse "0";
     const shlvl = std.fmt.parseInt(u32, parent_shlvl, 10) catch 0;
     const shlvl_str = std.fmt.bufPrint(&shlvl_buf, "{d}", .{shlvl + 1}) catch "1";
-    set("SHLVL", shlvl_str, false);
+    _ = set("SHLVL", shlvl_str, false);
 
     // Static / initial values
-    set("LINENO", "0", false);
+    _ = set("LINENO", "0", false);
 
     // EPOCHSECONDS
     var epoch_buf: [32]u8 = undefined;
     const epoch_str = std.fmt.bufPrint(&epoch_buf, "{d}", .{time(null)}) catch "0";
-    set("EPOCHSECONDS", epoch_str, false);
+    _ = set("EPOCHSECONDS", epoch_str, false);
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -155,24 +156,27 @@ extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
 extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
 extern "c" fn time(timer: ?*i64) i64;
 
-pub fn set(name: []const u8, value: []const u8, exported: bool) void {
-    if (isReadonly(name)) return;
+pub fn set(name: []const u8, value: []const u8, exported: bool) bool {
+    if (isReadonly(name)) return false;
     var s: ?*Scope = global_scope;
     while (s) |scope| {
         if (scope.vars.get(name)) |_| {
             scope.vars.put(name, .{ .value = allocValue(value), .exported = exported }) catch {};
             exportVar(name, value);
-            return;
+            return true;
         }
         s = scope.parent;
     }
     global_scope.vars.put(allocValue(name), .{ .value = allocValue(value), .exported = exported }) catch {};
     exportVar(name, value);
+    return true;
 }
 
-pub fn setLocal(name: []const u8, value: []const u8, exported: bool) void {
+pub fn setLocal(name: []const u8, value: []const u8, exported: bool) bool {
+    if (isReadonly(name)) return false;
     global_scope.vars.put(allocValue(name), .{ .value = allocValue(value), .exported = exported }) catch {};
     exportVar(name, value);
+    return true;
 }
 
 fn exportVar(name: []const u8, value: []const u8) void {
@@ -199,7 +203,7 @@ pub fn setExport(name: []const u8, val: bool) void {
     _ = val;
     // Re-set the exported flag by re-setting the variable
     if (get(name)) |v| {
-        set(name, v.value, true);
+        _ = set(name, v.value, true);
     }
 }
 
@@ -393,6 +397,7 @@ pub fn getSpecial(c: u8) []const u8 {
             var pos: usize = 0;
             if (interactive) { buf[pos] = 'i'; pos += 1; }
             buf[pos] = 'h'; pos += 1;
+            if (command_flag) { buf[pos] = 'c'; pos += 1; }
             if (errexit) { buf[pos] = 'e'; pos += 1; }
             if (nounset) { buf[pos] = 'u'; pos += 1; }
             buf[pos] = 'B'; pos += 1;

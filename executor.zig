@@ -23,8 +23,8 @@ var mode: ProgramMode = .script;
 var allocator: std.mem.Allocator = undefined;
 var functions: std.StringHashMap(NodeType) = undefined;
 var loop_depth: usize = 0;
-var break_requested: bool = false;
-var continue_requested: bool = false;
+var break_requested: usize = 0;
+var continue_requested: usize = 0;
 var return_requested: bool = false;
 
 pub fn init(alloc: std.mem.Allocator) void {
@@ -150,7 +150,7 @@ fn recordExitStatus(status: u8) void {
     var_store.setExitStatus(status);
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}", .{status}) catch "0";
-    var_store.set("?", s, false);
+    _ = var_store.set("?", s, false);
 }
 
 fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -182,7 +182,7 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             var_store.setLastBgPid(@intCast(pid));
             var buf: [16]u8 = undefined;
             const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
-            var_store.set("!", pid_str, false);
+            _ = var_store.set("!", pid_str, false);
             i += 2;
         } else {
             if (isSyntaxErrorToken(cname)) {
@@ -413,11 +413,23 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
         return execBuiltinExec(io, expanded.items);
     }
     if (std.mem.eql(u8, cmd_name, "break")) {
-        if (loop_depth > 0) break_requested = true;
+        if (loop_depth > 0) {
+            const n = if (expanded.items.len > 1)
+                std.fmt.parseInt(usize, expanded.items[1], 10) catch 1
+            else
+                1;
+            break_requested = n;
+        }
         return 0;
     }
     if (std.mem.eql(u8, cmd_name, "continue")) {
-        if (loop_depth > 0) continue_requested = true;
+        if (loop_depth > 0) {
+            const n = if (expanded.items.len > 1)
+                std.fmt.parseInt(usize, expanded.items[1], 10) catch 1
+            else
+                1;
+            continue_requested = n;
+        }
         return 0;
     }
     if (std.mem.eql(u8, cmd_name, "return")) {
@@ -608,21 +620,24 @@ fn execFor(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
         // Use first word by default (no interactive input in non-interactive mode)
         if (words.items.len > 0) {
-            var_store.setLocal(var_name, words.items[0], false);
+            _ = var_store.setLocal(var_name, words.items[0], false);
             last_status = execNode(io, body, source);
         }
     } else {
         for (words.items) |w| {
-            if (break_requested) {
-                break_requested = false;
+            _ = var_store.setLocal(var_name, w, false);
+            last_status = execNode(io, body, source);
+
+        if (break_requested != 0) {
+                break_requested -= 1;
+                if (break_requested == 0) break;
                 break;
             }
-            if (continue_requested) {
-                continue_requested = false;
-                continue;
+            if (continue_requested != 0) {
+                continue_requested -= 1;
+                if (continue_requested == 0) continue;
+                break;
             }
-            var_store.setLocal(var_name, w, false);
-            last_status = execNode(io, body, source);
         }
     }
 
@@ -647,7 +662,7 @@ fn execCStyleFor(io: std.Io, node: NodeType, source: []const u8) u8 {
         if (std.mem.indexOfScalar(u8, text, '=')) |eq| {
             const vname = text[0..eq];
             const vval = text[eq + 1 ..];
-            var_store.setLocal(vname, vval, false);
+            _ = var_store.setLocal(vname, vval, false);
         } else {
             _ = evalArithmetic(allocator, text);
         }
@@ -659,12 +674,12 @@ fn execCStyleFor(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last_status: u8 = 0;
     var iter_count: u32 = 0;
     while (iter_count < 1000000) : (iter_count += 1) {
-        if (break_requested) {
-            break_requested = false;
+        if (break_requested != 0) {
+            break_requested -= 1;
             break;
         }
-        if (continue_requested) {
-            continue_requested = false;
+        if (continue_requested != 0) {
+            continue_requested -= 1;
         }
 
         if (cond_node) |n| {
@@ -710,12 +725,12 @@ fn execWhile(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last_status: u8 = 0;
     var iter_count: u32 = 0;
     while (iter_count < 1000000) : (iter_count += 1) {
-        if (break_requested) {
-            break_requested = false;
+        if (break_requested != 0) {
+            break_requested -= 1;
             break;
         }
-        if (continue_requested) {
-            continue_requested = false;
+        if (continue_requested != 0) {
+            continue_requested -= 1;
         }
 
         const cond_status = execNode(io, condition, source);
@@ -1118,7 +1133,7 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
             var_store.setLastBgPid(@intCast(pid));
             var buf: [16]u8 = undefined;
             const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
-            var_store.set("!", pid_str, false);
+            _ = var_store.set("!", pid_str, false);
             i += 2;
         } else {
             if (isSyntaxErrorToken(cname)) {
@@ -1172,12 +1187,12 @@ fn execArithmeticCmd(io: std.Io, node: NodeType, source: []const u8) u8 {
                 if (evalArithmetic(allocator, val_expr)) |val| {
                     var vbuf: [32]u8 = undefined;
                     const val_str = std.fmt.bufPrint(&vbuf, "{d}", .{val}) catch "0";
-                    var_store.set(name, val_str, false);
+                    _ = var_store.set(name, val_str, false);
                     const is_zero = (val == 0);
                     const exit_val: u8 = if (is_zero) 1 else 0;
                     var qbuf: [16]u8 = undefined;
                     const s = std.fmt.bufPrint(&qbuf, "{d}", .{exit_val}) catch "0";
-                    var_store.set("?", s, false);
+                    _ = var_store.set("?", s, false);
                     return exit_val;
                 }
                 return 1;
@@ -1190,7 +1205,7 @@ fn execArithmeticCmd(io: std.Io, node: NodeType, source: []const u8) u8 {
     const exit_val: u8 = if (is_zero) 1 else 0;
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}", .{exit_val}) catch "0";
-    var_store.set("?", s, false);
+    _ = var_store.set("?", s, false);
     return exit_val;
 }
 
@@ -1207,12 +1222,12 @@ fn execSubshell(io: std.Io, node: NodeType, source: []const u8) u8 {
             const val = std.fmt.parseInt(u32, v.value, 10) catch 0;
             var buf: [16]u8 = undefined;
             const new_val = std.fmt.bufPrint(&buf, "{d}", .{val + 1}) catch "1";
-            var_store.set("BASH_SUBSHELL", new_val, false);
+            _ = var_store.set("BASH_SUBSHELL", new_val, false);
         }
         {
             var buf: [16]u8 = undefined;
             const pid_str = std.fmt.bufPrint(&buf, "{d}", .{c_getpid()}) catch "0";
-            var_store.set("BASHPID", pid_str, false);
+            _ = var_store.set("BASHPID", pid_str, false);
         }
 
         // Child: execute the body
@@ -1220,6 +1235,9 @@ fn execSubshell(io: std.Io, node: NodeType, source: []const u8) u8 {
         for (0..count) |i| {
             const child = parser.childAt(node, @intCast(i));
             last_status = execNode(io, child, source);
+            if (var_store.errexit and last_status != 0) {
+                break;
+            }
         }
         c._exit(last_status);
     }
@@ -1478,12 +1496,12 @@ fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
             var result = res;
             defer result.deinit();
             if (result.words.len > 0) {
-                var_store.setLocal(name, result.words[0], false);
+                _ = var_store.setLocal(name, result.words[0], false);
             } else {
-                var_store.setLocal(name, "", false);
+                _ = var_store.setLocal(name, "", false);
             }
         } else |_| {
-            var_store.setLocal(name, "", false);
+            _ = var_store.setLocal(name, "", false);
         }
     }
     return 0;
@@ -1504,19 +1522,19 @@ fn execExport(io: std.Io, node: NodeType, source: []const u8) u8 {
                     var result = res;
                     defer result.deinit();
                     if (result.words.len > 0) {
-                        var_store.set(name, result.words[0], true);
+                        _ = var_store.set(name, result.words[0], true);
                     } else {
-                        var_store.set(name, "", true);
+                        _ = var_store.set(name, "", true);
                     }
                 } else |_| {
-                    var_store.set(name, "", true);
+                    _ = var_store.set(name, "", true);
                 }
             }
         } else if (std.mem.eql(u8, cname, "word")) {
             const name = nodeText(child, source);
             if (!std.mem.startsWith(u8, name, "-")) {
                 if (var_store.get(name)) |v| {
-                    var_store.set(name, v.value, true);
+                    _ = var_store.set(name, v.value, true);
                 }
             }
         }
@@ -1528,11 +1546,9 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
     const ncount = parser.namedChildCount(node);
     if (ncount < 2) return 0;
 
-    // First named child is the tested value
     const value_node = parser.namedChild(node, 0);
     const value_text = nodeText(value_node, source);
 
-    // Case items follow (case_item nodes)
     for (1..ncount) |i| {
         const item = parser.namedChild(node, @intCast(i));
         const iname = nodeName(item);
@@ -1541,14 +1557,10 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
         const item_count = parser.namedChildCount(item);
         if (item_count == 0) continue;
 
-        // Last named child is the body (maybe)
-        // Patterns are before the body
-
-        // Find patterns: named children that are word/string/expansion
-        var patterns: std.ArrayListAligned([]const u8, null) = .empty;
-        defer patterns.deinit(allocator);
-
         var item_body: ?NodeType = null;
+        var raw_patterns: std.ArrayListAligned([]const u8, null) = .empty;
+        defer raw_patterns.deinit(allocator);
+
         for (0..item_count) |j| {
             const child = parser.namedChild(item, @intCast(j));
             const cname = nodeName(child);
@@ -1556,42 +1568,24 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
                 std.mem.eql(u8, cname, "raw_string") or std.mem.eql(u8, cname, "simple_expansion"))
             {
                 const pat = nodeText(child, source);
-                patterns.append(allocator, pat) catch @panic("oom");
+                raw_patterns.append(allocator, pat) catch @panic("oom");
             } else {
-                // Assume this is the body command
                 item_body = child;
             }
         }
 
-        // Check if value matches any pattern (simple string comparison for now)
         var matched = false;
-        for (patterns.items) |pat| {
-            // Simple glob-like matching: if pattern contains * or ? use simple matching
-            if (std.mem.indexOfScalar(u8, pat, '*') != null) {
-                // Prefix/suffix match: *foo, foo*, *foo*
-                if (std.mem.startsWith(u8, pat, "*") and std.mem.endsWith(u8, pat, "*") and pat.len >= 2) {
-                    const inner = pat[1 .. pat.len - 1];
-                    if (std.mem.indexOf(u8, value_text, inner) != null) {
-                        matched = true;
-                        break;
-                    }
-                } else if (std.mem.startsWith(u8, pat, "*")) {
-                    const suffix = pat[1..];
-                    if (std.mem.endsWith(u8, value_text, suffix)) {
-                        matched = true;
-                        break;
-                    }
-                } else if (std.mem.endsWith(u8, pat, "*")) {
-                    const prefix = pat[0 .. pat.len - 1];
-                    if (std.mem.startsWith(u8, value_text, prefix)) {
-                        matched = true;
-                        break;
-                    }
+        for (raw_patterns.items) |pat| {
+            var it = std.mem.splitScalar(u8, pat, '|');
+            while (it.next()) |single_pat| {
+                const trimmed = std.mem.trim(u8, single_pat, " ");
+                if (trimmed.len == 0) continue;
+                if (globMatch(value_text, trimmed)) {
+                    matched = true;
+                    break;
                 }
-            } else if (std.mem.eql(u8, value_text, pat)) {
-                matched = true;
-                break;
             }
+            if (matched) break;
         }
 
         if (matched) {
@@ -1603,6 +1597,40 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     return 0;
+}
+
+fn globMatch(text: []const u8, pattern: []const u8) bool {
+    if (pattern.len == 0) return text.len == 0;
+    if (pattern.len == 1 and pattern[0] == '*') return true;
+
+    var ti: usize = 0;
+    var pi: usize = 0;
+
+    var star_pi: ?usize = null;
+    var star_ti: ?usize = null;
+
+    while (ti < text.len) {
+        if (pi < pattern.len and (pattern[pi] == text[ti] or pattern[pi] == '?')) {
+            ti += 1;
+            pi += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_pi = pi;
+            pi += 1;
+            star_ti = ti;
+        } else if (star_pi) |sp| {
+            pi = sp + 1;
+            star_ti.? += 1;
+            ti = star_ti.?;
+        } else {
+            return false;
+        }
+    }
+
+    while (pi < pattern.len and pattern[pi] == '*') {
+        pi += 1;
+    }
+
+    return pi == pattern.len;
 }
 
 fn execBuiltinEval(io: std.Io, source: []const u8, args: [][]const u8) u8 {

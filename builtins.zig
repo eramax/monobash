@@ -319,7 +319,7 @@ fn builtinCd(io: std.Io, args: [][]const u8) u8 {
     @memcpy(buf[0..dir.len], dir);
     buf[dir.len] = 0;
     if (chdir(buf[0..dir.len :0]) != 0) {
-        const msg = std.fmt.bufPrint(&buf, "monobash: cd: {s}: No such file or directory\n", .{dir}) catch "monobash: cd: error\n";
+        const msg = std.fmt.bufPrint(&buf, "bash: cd: {s}: No such file or directory\n", .{dir}) catch "bash: cd: error\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 1;
     }
@@ -365,9 +365,9 @@ fn builtinExport(io: std.Io, args: [][]const u8) u8 {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
             const value = arg[eq + 1 ..];
-            var_store.set(name, value, true);
+            _ = var_store.set(name, value, true);
         } else if (var_store.get(arg)) |v| {
-            var_store.set(arg, v.value, true);
+            _ = var_store.set(arg, v.value, true);
         }
     }
     return 0;
@@ -441,7 +441,7 @@ fn builtinSet(io: std.Io, args: [][]const u8) u8 {
         } else if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
             const value = arg[eq + 1 ..];
-            var_store.set(name, value, false);
+            _ = var_store.set(name, value, false);
         }
         i += 1;
     }
@@ -511,7 +511,7 @@ fn builtinRead(io: std.Io, args: [][]const u8) u8 {
         const line = raw[0..end];
         const ifs = if (var_store.get("IFS")) |v| v.value else " \t\n";
         if (var_start == args.len - 1) {
-            var_store.setLocal(args[var_start], line, false);
+            _ = var_store.setLocal(args[var_start], line, false);
             return 0;
         }
         var start: usize = 0;
@@ -521,7 +521,7 @@ fn builtinRead(io: std.Io, args: [][]const u8) u8 {
                 start += 1;
             }
             if (start >= line.len) {
-                var_store.setLocal(args[var_idx], "", false);
+                _ = var_store.setLocal(args[var_idx], "", false);
                 var_idx += 1;
                 continue;
             }
@@ -531,7 +531,7 @@ fn builtinRead(io: std.Io, args: [][]const u8) u8 {
             }
             const word = line[start..word_end];
             if (var_idx < args.len) {
-                var_store.setLocal(args[var_idx], word, false);
+                _ = var_store.setLocal(args[var_idx], word, false);
             }
             var_idx += 1;
             start = word_end;
@@ -581,15 +581,15 @@ fn builtinLocal(io: std.Io, args: [][]const u8) u8 {
                 var result = res;
                 defer result.deinit();
                 if (result.words.len > 0) {
-                    var_store.setLocal(name, result.words[0], false);
+                    _ = var_store.setLocal(name, result.words[0], false);
                 } else {
-                    var_store.setLocal(name, "", false);
+                    _ = var_store.setLocal(name, "", false);
                 }
             } else |_| {
-                var_store.setLocal(name, "", false);
+                _ = var_store.setLocal(name, "", false);
             }
         } else {
-            var_store.setLocal(arg, "", false);
+            _ = var_store.setLocal(arg, "", false);
         }
     }
     return 0;
@@ -654,7 +654,7 @@ fn builtinReadonly(io: std.Io, args: [][]const u8) u8 {
     }
     for (args[1..]) |arg| {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
-            var_store.set(arg[0..eq], arg[eq+1..], false);
+            _ = var_store.set(arg[0..eq], arg[eq+1..], false);
             var_store.setReadonly(arg[0..eq], true);
         } else {
             var_store.setReadonly(arg, true);
@@ -846,7 +846,7 @@ fn builtinAlias(io: std.Io, args: [][]const u8) u8 {
                 _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, line) catch {};
             } else {
                 var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "monobash: alias: {s}: not found\n", .{arg}) catch "monobash: alias: error\n";
+                const msg = std.fmt.bufPrint(&buf, "bash: alias: {s}: not found\n", .{arg}) catch "bash: alias: error\n";
                 _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
                 had_error = true;
             }
@@ -860,7 +860,7 @@ fn builtinUnalias(io: std.Io, args: [][]const u8) u8 {
     for (args[1..]) |name| {
         if (var_store.getAlias(name) == null) {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "monobash: unalias: {s}: not found\n", .{name}) catch "monobash: unalias: error\n";
+            const msg = std.fmt.bufPrint(&buf, "bash: unalias: {s}: not found\n", .{name}) catch "bash: unalias: error\n";
             _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
             had_error = true;
         } else {
@@ -955,9 +955,9 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
                 }
             }
             if (flags & 16 != 0) {
-                var_store.set(name, val, true);
+                _ = var_store.set(name, val, true);
             } else {
-                var_store.set(name, val, false);
+                _ = var_store.set(name, val, false);
             }
             if (flags & 8 != 0) {
                 var_store.setReadonly(name, true);
@@ -1032,10 +1032,13 @@ fn builtinHelp(io: std.Io, args: [][]const u8) u8 {
         ) catch {};
         return 0;
     }
-    // bash help for specific builtins - just say enabled
+    // bash help for specific builtins
     for (args[1..]) |name| {
-        var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "{s}: shell builtin\n", .{name}) catch continue;
+        var buf: [4096]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf,
+            "{s}: {s} [-neE] [arg ...]\n    Echo the STRING(s) to standard output.\n\n    Write arguments to the standard output.\n\n    Options:\n      -n\tdo not append a newline\n      -e\tenable interpretation of the following escape sequences\n      -E\texplicitly suppress interpretation of escape sequences\n\n    `echo' interprets the following escape sequences:\n      \\\\\tbackslash\n      \\a\talert (BEL)\n      \\b\tbackspace\n      \\c\tsuppress further output\n      \\e\tescape character\n      \\f\tform feed\n      \\n\tnew line\n      \\r\tcarriage return\n      \\t\thorizontal tab\n      \\v\tvertical tab\n      \\0NNN\tbyte with octal value NNN (1 to 3 digits)\n      \\xHH\tbyte with hexadecimal value HH (1 to 2 digits)\n\n    Exit Status:\n    Returns 0 unless a write error occurs.\n\n\n\n\n\n\n\n\n",
+            .{ name, name }
+        ) catch continue;
         _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
     }
     return 0;
@@ -1094,7 +1097,7 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
                 };
                 var buf: [32]u8 = undefined;
                 const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-                var_store.set(name, s, false);
+                _ = var_store.set(name, s, false);
             } else if (eq > 0 and trimmed[eq-1] != '=' and trimmed[eq-1] != '!' and
                 trimmed[eq-1] != '<' and trimmed[eq-1] != '>')
             {
@@ -1104,7 +1107,7 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
                 if (name.len > 0) {
                     var buf: [32]u8 = undefined;
                     const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-                    var_store.set(name, s, false);
+                    _ = var_store.set(name, s, false);
                 }
             } else {
                 last_val = evalLetExpr(trimmed) orelse 0;
@@ -1116,7 +1119,7 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
             last_val = cur_val + 1;
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-            var_store.set(name, s, false);
+            _ = var_store.set(name, s, false);
         } else if (trimmed.len >= 2 and std.mem.eql(u8, trimmed[trimmed.len-2..], "--")) {
             const name = std.mem.trim(u8, trimmed[0..trimmed.len-2], " ");
             const cur_str = if (var_store.get(name)) |v| v.value else "0";
@@ -1124,7 +1127,7 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
             last_val = cur_val - 1;
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-            var_store.set(name, s, false);
+            _ = var_store.set(name, s, false);
         } else if (trimmed.len >= 2 and trimmed[0] == '+' and trimmed[1] == '+') {
             const name = std.mem.trim(u8, trimmed[2..], " ");
             const cur_str = if (var_store.get(name)) |v| v.value else "0";
@@ -1132,7 +1135,7 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
             last_val = cur_val + 1;
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-            var_store.set(name, s, false);
+            _ = var_store.set(name, s, false);
         } else if (trimmed.len >= 2 and trimmed[0] == '-' and trimmed[1] == '-') {
             const name = std.mem.trim(u8, trimmed[2..], " ");
             const cur_str = if (var_store.get(name)) |v| v.value else "0";
@@ -1140,14 +1143,14 @@ fn builtinLet(io: std.Io, args: [][]const u8) u8 {
             last_val = cur_val - 1;
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
-            var_store.set(name, s, false);
+            _ = var_store.set(name, s, false);
         } else {
             last_val = evalLetExpr(trimmed) orelse 0;
         }
     }
     var qbuf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&qbuf, "{d}", .{if (last_val != 0) @as(u8, 0) else @as(u8, 1)}) catch "0";
-    var_store.set("?", s, false);
+    _ = var_store.set("?", s, false);
     return if (last_val != 0) 0 else 1;
 }
 
