@@ -132,12 +132,14 @@ fn builtinEcho(io: std.Io, args: [][]const u8) u8 {
     const stdout = std.Io.File.stdout();
     var i: usize = 1;
     var no_newline = false;
+    var enable_escapes = false;
 
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
         if (std.mem.eql(u8, args[i], "-n")) {
             no_newline = true;
             i += 1;
         } else if (std.mem.eql(u8, args[i], "-e")) {
+            enable_escapes = true;
             i += 1;
         } else if (std.mem.eql(u8, args[i], "-E")) {
             i += 1;
@@ -152,12 +154,78 @@ fn builtinEcho(io: std.Io, args: [][]const u8) u8 {
             _ = std.Io.File.writeStreamingAll(stdout, io, " ") catch {};
         }
         first = false;
-        _ = std.Io.File.writeStreamingAll(stdout, io, args[i]) catch {};
+        if (enable_escapes) {
+            const processed = processEscapeSequences(args[i]);
+            _ = std.Io.File.writeStreamingAll(stdout, io, processed) catch {};
+        } else {
+            _ = std.Io.File.writeStreamingAll(stdout, io, args[i]) catch {};
+        }
     }
     if (!no_newline) {
         _ = std.Io.File.writeStreamingAll(stdout, io, "\n") catch {};
     }
     return 0;
+}
+
+fn processEscapeSequences(s: []const u8) []const u8 {
+    var buf: [4096]u8 = undefined;
+    var pos: usize = 0;
+    var i: usize = 0;
+    while (i < s.len and pos < buf.len) {
+        if (s[i] == '\\' and i + 1 < s.len) {
+            i += 1;
+            switch (s[i]) {
+                'a' => { buf[pos] = '\x07'; pos += 1; },
+                'b' => { buf[pos] = '\x08'; pos += 1; },
+                'c' => { return buf[0..pos]; },
+                'e' => { buf[pos] = '\x1B'; pos += 1; },
+                'f' => { buf[pos] = '\x0C'; pos += 1; },
+                'n' => { buf[pos] = '\n'; pos += 1; },
+                'r' => { buf[pos] = '\r'; pos += 1; },
+                't' => { buf[pos] = '\t'; pos += 1; },
+                'v' => { buf[pos] = '\x0B'; pos += 1; },
+                '\\' => { buf[pos] = '\\'; pos += 1; },
+                '0'...'7' => {
+                    var octal_val: u8 = 0;
+                    var digits: u8 = 1;
+                    while (i + digits < s.len and s[i + digits] >= '0' and s[i + digits] <= '7' and digits < 3) : (digits += 1) {
+                        octal_val = octal_val * 8 + (s[i + digits] - '0');
+                    }
+                    buf[pos] = octal_val;
+                    pos += 1;
+                    i += digits - 1;
+                },
+                'x' => {
+                    if (i + 1 < s.len) {
+                        i += 1;
+                        var hex_val: u8 = 0;
+                        var hex_digits: u8 = 0;
+                        while (i < s.len and hex_digits < 2) : (hex_digits += 1) {
+                            const ch = s[i];
+                            switch (ch) {
+                                '0'...'9' => { hex_val = hex_val * 16 + (ch - '0'); i += 1; },
+                                'a'...'f' => { hex_val = hex_val * 16 + (ch - 'a' + 10); i += 1; },
+                                'A'...'F' => { hex_val = hex_val * 16 + (ch - 'A' + 10); i += 1; },
+                                else => break,
+                            }
+                        }
+                        buf[pos] = hex_val;
+                        pos += 1;
+                        i -= 1; // adjust since loop increment will add 1
+                    }
+                },
+                else => {
+                    buf[pos] = '\\'; pos += 1;
+                    if (pos < buf.len) { buf[pos] = s[i]; pos += 1; }
+                },
+            }
+        } else {
+            buf[pos] = s[i];
+            pos += 1;
+        }
+        i += 1;
+    }
+    return buf[0..pos];
 }
 
 fn builtinTrue(io: std.Io, args: [][]const u8) u8 {
@@ -1036,7 +1104,7 @@ fn builtinHelp(io: std.Io, args: [][]const u8) u8 {
     for (args[1..]) |name| {
         var buf: [4096]u8 = undefined;
         const line = std.fmt.bufPrint(&buf,
-            "{s}: {s} [-neE] [arg ...]\n    Echo the STRING(s) to standard output.\n\n    Write arguments to the standard output.\n\n    Options:\n      -n\tdo not append a newline\n      -e\tenable interpretation of the following escape sequences\n      -E\texplicitly suppress interpretation of escape sequences\n\n    `echo' interprets the following escape sequences:\n      \\\\\tbackslash\n      \\a\talert (BEL)\n      \\b\tbackspace\n      \\c\tsuppress further output\n      \\e\tescape character\n      \\f\tform feed\n      \\n\tnew line\n      \\r\tcarriage return\n      \\t\thorizontal tab\n      \\v\tvertical tab\n      \\0NNN\tbyte with octal value NNN (1 to 3 digits)\n      \\xHH\tbyte with hexadecimal value HH (1 to 2 digits)\n\n    Exit Status:\n    Returns 0 unless a write error occurs.\n\n\n\n\n\n\n\n\n",
+            "{s}: {s} [-neE] [arg ...]\n    Echo the STRING(s) to standard output.\n\n    Write arguments to the standard output.\n\n    Options:\n      -n\tdo not append a newline\n      -e\tenable interpretation of the following escape sequences\n      -E\texplicitly suppress interpretation of escape sequences\n\n    `echo' interprets the following escape sequences:\n      \\\\\tbackslash\n      \\a\talert (BEL)\n      \\b\tbackspace\n      \\c\tsuppress further output\n      \\e\tescape character\n      \\f\tform feed\n      \\n\tnew line\n      \\r\tcarriage return\n      \\t\thorizontal tab\n      \\v\tvertical tab\n      \\0NNN\tbyte with octal value NNN (1 to 3 digits)\n      \\xHH\tbyte with hexadecimal value HH (1 to 2 digits)\n\n    Exit Status:\n    Returns 0 unless a write error occurs.\n\n    Examples:\n      echo hello world\n      echo -n no newline\n      echo -e 'a\\tb'\n      echo $HOME\n      echo \"quoted string\"\n      echo a b c > file\n",
             .{ name, name }
         ) catch continue;
         _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};

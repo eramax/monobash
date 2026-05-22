@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Get the directory from the path (or cwd for relative paths)
         const content = std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), init.io, path, arena, .unlimited) catch {
-            const msg = std.fmt.allocPrint(arena, "monobash: {s}: No such file or directory\n", .{path}) catch unreachable;
+            const msg = std.fmt.allocPrint(arena, "bash: {s}: No such file or directory\n", .{path}) catch unreachable;
             _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), init.io, msg) catch {};
             std.process.exit(127);
         };

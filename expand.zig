@@ -48,9 +48,395 @@ fn expandRaw(allocator: std.mem.Allocator, raw_z: [:0]u8, flags: c_int) WordExpE
     return WordList{ .words = try words.toOwnedSlice(allocator), .allocator = allocator };
 }
 
+/// Try to expand brace patterns. Returns null if no braces found.
+pub fn expandBrace(allocator: std.mem.Allocator, raw: []const u8) !?WordList {
+    if (std.mem.indexOfScalar(u8, raw, '{') == null) return null;
+    const list = try expandBraceString(allocator, raw);
+    if (list.words.len == 1 and std.mem.eql(u8, list.words[0], raw)) {
+        list.deinit();
+        return null;
+    }
+    return list;
+}
+
+fn expandBraceString(allocator: std.mem.Allocator, str: []const u8) !WordList {
+    var i: usize = 0;
+    while (i < str.len) {
+        switch (str[i]) {
+            '\\' => {
+                i += 2;
+            },
+            '\'' => {
+                i += 1;
+                while (i < str.len and str[i] != '\'') : (i += 1) {}
+                if (i < str.len) i += 1;
+            },
+            '"' => {
+                i += 1;
+                while (i < str.len and str[i] != '"') {
+                    if (str[i] == '\\' and i + 1 < str.len) i += 2 else i += 1;
+                }
+                if (i < str.len) i += 1;
+            },
+            '$' => {
+                if (i + 1 < str.len and str[i + 1] == '\'') {
+                    i += 2;
+                    while (i < str.len and str[i] != '\'') {
+                        if (str[i] == '\\' and i + 1 < str.len) i += 2 else i += 1;
+                    }
+                    if (i < str.len) i += 1;
+                } else if (i + 1 < str.len and str[i + 1] == '{') {
+                    if (findMatchingBrace(str, i + 1)) |close| {
+                        i = close + 1;
+                    } else {
+                        i += 1;
+                    }
+                } else if (i + 1 < str.len and str[i + 1] == '(') {
+                    var paren_depth: usize = 1;
+                    var j = i + 2;
+                    while (j < str.len and paren_depth > 0) : (j += 1) {
+                        if (str[j] == '(') paren_depth += 1;
+                        if (str[j] == ')') paren_depth -= 1;
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            },
+            '{' => {
+                if (findMatchingBrace(str, i)) |close| {
+                    const content = str[i + 1 .. close];
+                    const parts = try parseBraceParts(allocator, content);
+                    defer {
+                        for (parts) |p| allocator.free(p);
+                        allocator.free(parts);
+                    }
+                    if (parts.len > 1 or isRangeContent(content)) {
+                        const prefix = str[0..i];
+                        const suffix = if (close + 1 < str.len) str[close + 1 ..] else "";
+                        var result = std.ArrayListAligned([]const u8, null).empty;
+                        const expanded_suffix = try expandBraceString(allocator, suffix);
+                        defer expanded_suffix.deinit();
+                        for (parts) |part| {
+                            for (expanded_suffix.words) |suf| {
+                                const combined = try std.mem.concat(allocator, u8, &.{ prefix, part, suf });
+                                try result.append(allocator, combined);
+                            }
+                        }
+                        return WordList{ .words = try result.toOwnedSlice(allocator), .allocator = allocator };
+                    }
+                }
+                i += 1;
+            },
+            else => {
+                i += 1;
+            },
+        }
+    }
+    var words: std.ArrayListAligned([]const u8, null) = .empty;
+    try words.append(allocator, try allocator.dupe(u8, str));
+    return WordList{ .words = try words.toOwnedSlice(allocator), .allocator = allocator };
+}
+
+fn findMatchingBrace(str: []const u8, start: usize) ?usize {
+    if (start >= str.len or str[start] != '{') return null;
+    var depth: usize = 1;
+    var i = start + 1;
+    while (i < str.len and depth > 0) {
+        switch (str[i]) {
+            '\\' => {
+                i += 2;
+            },
+            '\'' => {
+                i += 1;
+                while (i < str.len and str[i] != '\'') : (i += 1) {}
+                if (i < str.len) i += 1;
+            },
+            '"' => {
+                i += 1;
+                while (i < str.len and str[i] != '"') {
+                    if (str[i] == '\\' and i + 1 < str.len) i += 2 else i += 1;
+                }
+                if (i < str.len) i += 1;
+            },
+            '$' => {
+                if (i + 1 < str.len and str[i + 1] == '\'') {
+                    i += 2;
+                    while (i < str.len and str[i] != '\'') {
+                        if (str[i] == '\\' and i + 1 < str.len) i += 2 else i += 1;
+                    }
+                    if (i < str.len) i += 1;
+                } else if (i + 1 < str.len and str[i + 1] == '{') {
+                    if (findMatchingBrace(str, i + 1)) |close| {
+                        i = close + 1;
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            },
+            '{' => {
+                depth += 1;
+                i += 1;
+            },
+            '}' => {
+                depth -= 1;
+                if (depth == 0) return i;
+                i += 1;
+            },
+            else => {
+                i += 1;
+            },
+        }
+    }
+    return null;
+}
+
+fn hasTopLevelComma(content: []const u8) bool {
+    var depth: usize = 0;
+    var i: usize = 0;
+    while (i < content.len) {
+        switch (content[i]) {
+            '\\' => {
+                i += 2;
+            },
+            '\'' => {
+                i += 1;
+                while (i < content.len and content[i] != '\'') : (i += 1) {}
+                if (i < content.len) i += 1;
+            },
+            '"' => {
+                i += 1;
+                while (i < content.len and content[i] != '"') {
+                    if (content[i] == '\\' and i + 1 < content.len) i += 2 else i += 1;
+                }
+                if (i < content.len) i += 1;
+            },
+            '$' => {
+                if (i + 1 < content.len and content[i + 1] == '\'') {
+                    i += 2;
+                    while (i < content.len and content[i] != '\'') {
+                        if (content[i] == '\\' and i + 1 < content.len) i += 2 else i += 1;
+                    }
+                    if (i < content.len) i += 1;
+                } else {
+                    i += 1;
+                }
+            },
+            '{' => {
+                depth += 1;
+                i += 1;
+            },
+            '}' => {
+                if (depth > 0) depth -= 1;
+                i += 1;
+            },
+            ',' => {
+                if (depth == 0) return true;
+                i += 1;
+            },
+            else => {
+                i += 1;
+            },
+        }
+    }
+    return false;
+}
+
+fn expandPartAndAppend(allocator: std.mem.Allocator, parts: *std.ArrayListAligned([]const u8, null), part: []const u8) WordExpError!void {
+    if (isRangeContent(part)) {
+        const expanded = try expandRange(allocator, part);
+        defer {
+            for (expanded) |w| allocator.free(w);
+            allocator.free(expanded);
+        }
+        for (expanded) |w| {
+            try parts.append(allocator, try allocator.dupe(u8, w));
+        }
+    } else if (hasTopLevelComma(part)) {
+        const sub_parts = try splitAndExpand(allocator, part);
+        defer {
+            for (sub_parts) |p| allocator.free(p);
+            allocator.free(sub_parts);
+        }
+        for (sub_parts) |w| {
+            try parts.append(allocator, try allocator.dupe(u8, w));
+        }
+    } else if (std.mem.indexOfScalar(u8, part, '{') != null) {
+        const expanded = try expandBraceString(allocator, part);
+        defer expanded.deinit();
+        for (expanded.words) |w| {
+            try parts.append(allocator, try allocator.dupe(u8, w));
+        }
+    } else {
+        try parts.append(allocator, try allocator.dupe(u8, part));
+    }
+}
+
+fn splitAndExpand(allocator: std.mem.Allocator, content: []const u8) WordExpError![][]const u8 {
+    var parts = std.ArrayListAligned([]const u8, null).empty;
+    var depth: usize = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < content.len) {
+        switch (content[i]) {
+            '\\' => {
+                i += 2;
+            },
+            '\'' => {
+                i += 1;
+                while (i < content.len and content[i] != '\'') : (i += 1) {}
+                if (i < content.len) i += 1;
+            },
+            '"' => {
+                i += 1;
+                while (i < content.len and content[i] != '"') {
+                    if (content[i] == '\\' and i + 1 < content.len) i += 2 else i += 1;
+                }
+                if (i < content.len) i += 1;
+            },
+            '$' => {
+                if (i + 1 < content.len and content[i + 1] == '\'') {
+                    i += 2;
+                    while (i < content.len and content[i] != '\'') {
+                        if (content[i] == '\\' and i + 1 < content.len) i += 2 else i += 1;
+                    }
+                    if (i < content.len) i += 1;
+                } else {
+                    i += 1;
+                }
+            },
+            '{' => {
+                depth += 1;
+                i += 1;
+            },
+            '}' => {
+                if (depth > 0) depth -= 1;
+                i += 1;
+            },
+            ',' => {
+                if (depth == 0) {
+                    try expandPartAndAppend(allocator, &parts, content[start..i]);
+                    start = i + 1;
+                }
+                i += 1;
+            },
+            else => {
+                i += 1;
+            },
+        }
+    }
+    if (start <= content.len) {
+        try expandPartAndAppend(allocator, &parts, content[start..]);
+    }
+    return parts.toOwnedSlice(allocator);
+}
+
+fn isNumeric(s: []const u8) bool {
+    if (s.len == 0) return false;
+    if (s.len > 1 and s[0] == '0') return false;
+    for (s) |ch| {
+        if (ch < '0' or ch > '9') return false;
+    }
+    return true;
+}
+
+fn isAlpha(s: []const u8) bool {
+    if (s.len != 1) return false;
+    const ch = s[0];
+    return (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z');
+}
+
+fn isRangeContent(content: []const u8) bool {
+    const first_dd = std.mem.indexOf(u8, content, "..") orelse return false;
+    const start_str = content[0..first_dd];
+    const remaining = content[first_dd + 2 ..];
+    if (start_str.len == 0 or remaining.len == 0) return false;
+    const second_dd = std.mem.indexOf(u8, remaining, "..");
+    const end_str = if (second_dd) |s| remaining[0..s] else remaining;
+    const step_str = if (second_dd) |s| remaining[s + 2 ..] else "";
+    if (end_str.len == 0) return false;
+    if (step_str.len > 0 and !isNumeric(step_str)) return false;
+    const start_num = isNumeric(start_str);
+    const end_num = isNumeric(end_str);
+    if (start_num and end_num) return true;
+    const start_alpha = isAlpha(start_str);
+    const end_alpha = isAlpha(end_str);
+    if (start_alpha and end_alpha) return true;
+    return false;
+}
+
+fn expandRange(allocator: std.mem.Allocator, content: []const u8) ![][]const u8 {
+    const first_dd = std.mem.indexOf(u8, content, "..").?;
+    const start_str = content[0..first_dd];
+    const remaining = content[first_dd + 2 ..];
+    const second_dd = std.mem.indexOf(u8, remaining, "..");
+    const end_str = if (second_dd) |s| remaining[0..s] else remaining;
+    const step_str = if (second_dd) |s| remaining[s + 2 ..] else "";
+    const step: i64 = if (step_str.len > 0) std.fmt.parseInt(i64, step_str, 10) catch 1 else 1;
+    var result = std.ArrayListAligned([]const u8, null).empty;
+    if (isNumeric(start_str)) {
+        const start = std.fmt.parseInt(i64, start_str, 10) catch return error.Syntax;
+        const end = std.fmt.parseInt(i64, end_str, 10) catch return error.Syntax;
+        if (start <= end) {
+            var val = start;
+            while (val <= end) {
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{val});
+                try result.append(allocator, s);
+                val += step;
+            }
+        } else {
+            var val = start;
+            while (val >= end) {
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{val});
+                try result.append(allocator, s);
+                val -= step;
+            }
+        }
+    } else {
+        const start: i64 = @intCast(start_str[0]);
+        const end: i64 = @intCast(end_str[0]);
+        if (start <= end) {
+            var val = start;
+            while (val <= end) {
+                const ch: u8 = @intCast(val);
+                const s = try allocator.dupe(u8, &.{ch});
+                try result.append(allocator, s);
+                val += step;
+            }
+        } else {
+            var val = start;
+            while (val >= end) {
+                const ch: u8 = @intCast(val);
+                const s = try allocator.dupe(u8, &.{ch});
+                try result.append(allocator, s);
+                val -= step;
+            }
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn parseBraceParts(allocator: std.mem.Allocator, content: []const u8) WordExpError![][]const u8 {
+    if (isRangeContent(content)) {
+        return expandRange(allocator, content);
+    }
+    if (hasTopLevelComma(content)) {
+        return splitAndExpand(allocator, content);
+    }
+    var result: [][]const u8 = try allocator.alloc([]const u8, 1);
+    result[0] = try allocator.dupe(u8, content);
+    return result;
+}
+
 pub fn expandToken(allocator: std.mem.Allocator, raw: []const u8) WordExpError!WordList {
     const cleaned = try stripLineContinuation(allocator, raw);
     defer allocator.free(cleaned);
+
+    if (try expandBrace(allocator, cleaned)) |result| {
+        return result;
+    }
 
     // Check if the entire token is a '...' single-quoted string
     if (cleaned.len >= 2 and cleaned[0] == '\'' and cleaned[cleaned.len - 1] == '\'') {

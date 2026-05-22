@@ -26,6 +26,7 @@ var loop_depth: usize = 0;
 var break_requested: usize = 0;
 var continue_requested: usize = 0;
 var return_requested: bool = false;
+var return_value: u8 = 0;
 
 pub fn init(alloc: std.mem.Allocator) void {
     allocator = alloc;
@@ -36,7 +37,7 @@ pub fn exec(io: std.Io, tree: *const parser.TreeType, src: []const u8) u8 {
     const node = parser.rootNode(tree);
 
     if (parser.nodeHasError(node)) {
-        const msg = "monobash: syntax error near unexpected token\n";
+        const msg = "bash: syntax error near unexpected token\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 2;
     }
@@ -186,13 +187,13 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             i += 2;
         } else {
             if (isSyntaxErrorToken(cname)) {
-                const msg = "monobash: syntax error near unexpected token `;;'\n";
+                const msg = "bash: syntax error near unexpected token `;;'\n";
                 _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
                 return 2;
             }
             if (isTerminator(cname)) {
                 if (prev_was_semi and std.mem.eql(u8, cname, ";")) {
-                    const msg = "monobash: syntax error near unexpected token `;;'\n";
+                    const msg = "bash: syntax error near unexpected token `;;'\n";
                     _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
                     return 2;
                 }
@@ -273,6 +274,9 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
         if (std.mem.eql(u8, firstName, "command_name") or std.mem.eql(u8, firstName, "word")) {
             return execSimpleCommand(io, node, source);
         }
+        if (std.mem.eql(u8, firstName, "variable_assignment")) {
+            return execSimpleCommand(io, node, source);
+        }
     }
 
     // Redirected, compound, if, for, etc. — recurse into children
@@ -289,14 +293,26 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     var expanded: std.ArrayListAligned([]const u8, null) = .empty;
     defer expanded.deinit(allocator);
 
-    // First, process variable assignments
+    // Collect variable assignments and redirects
+    var redirects: std.ArrayListAligned(Redirect, null) = .empty;
+    defer redirects.deinit(allocator);
+    var var_assign_nodes: std.ArrayListAligned(NodeType, null) = .empty;
+    defer var_assign_nodes.deinit(allocator);
+
     for (0..count) |i| {
         const child = parser.childAt(node, i);
-        if (std.mem.eql(u8, nodeName(child), "variable_assignment")) {
-            _ = execVarAssign(io, child, source);
+        const cname = nodeName(child);
+        if (std.mem.eql(u8, cname, "variable_assignment")) {
+            var_assign_nodes.append(allocator, child) catch @panic("oom");
+        } else if (std.mem.eql(u8, cname, "file_redirect")) {
+            const redirect = parseFileRedirect(child, source);
+            if (redirect) |r| {
+                redirects.append(allocator, r) catch @panic("oom");
+            }
         }
     }
 
+    // Expand command words (skip variable assignments, redirects, etc.)
     var i: usize = 0;
     while (i < count) {
         const child = parser.childAt(node, i);
@@ -315,10 +331,6 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
 
         var raw = nodeText(child, source);
 
-        // Detect backslash-newline continuation between word/string nodes.
-        // tree-sitter-bash's lexer handles \<newline> by consuming the backslash
-        // and newline without including them in the token, but the surrounding
-        // text becomes separate word tokens. We merge them back here.
         {
             var next_i = i + 1;
             while (next_i < count) {
@@ -372,50 +384,90 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
         i += 1;
     }
 
-    if (expanded.items.len == 0) return 0;
+    // If there are redirects, process them without fork
+    if (redirects.items.len > 0) {
+        // Save current fds
+        const saved_out = c.dup(1);
+        const saved_err = c.dup(2);
+        // Apply redirects
+        if (applyRedirects(redirects.items) != 0) {
+            if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+            if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+        }
+        // Process variable assignments
+        for (var_assign_nodes.items) |van| {
+            const s = execVarAssign(io, van, source);
+            if (s != 0) {
+                if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+                if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+                return s;
+            }
+        }
+        if (expanded.items.len == 0) {
+            if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+            if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+            return 0;
+        }
+        const status = execSimpleCommandInner(io, expanded.items[0], expanded.items, source);
+        if (saved_out >= 0) { _ = c.dup2(saved_out, 1); _ = c.close(saved_out); }
+        if (saved_err >= 0) { _ = c.dup2(saved_err, 2); _ = c.close(saved_err); }
+        recordExitStatus(status);
+        return status;
+    }
 
-    const cmd_name = expanded.items[0];
+    // Process variable assignments
+    var assign_status: u8 = 0;
+    for (var_assign_nodes.items) |van| {
+        const s = execVarAssign(io, van, source);
+        if (s != 0) assign_status = s;
+    }
 
+    if (expanded.items.len == 0) return assign_status;
+
+    return execSimpleCommandInner(io, expanded.items[0], expanded.items, source);
+}
+
+fn execSimpleCommandInner(io: std.Io, cmd_name: []const u8, expanded: [][]const u8, source: []const u8) u8 {
     // Check if it's a function
     if (functions.get(cmd_name)) |fn_node| {
         const ncount = parser.namedChildCount(fn_node);
         if (ncount >= 2) {
-            // Save old positional params
             const old_params = var_store.getPositional();
-
-            // Set new positional params from function arguments
-            if (expanded.items.len > 1) {
-                var_store.setPositional(allocator, expanded.items[1..]);
+            if (expanded.len > 1) {
+                var_store.setPositional(allocator, expanded[1..]);
             } else {
                 var_store.setPositional(allocator, &.{});
             }
-
-            // Execute function body
             const body = parser.namedChild(fn_node, 1);
-            const result = execNode(io, body, source);
-
-            // Restore positional params
+            const body_result = execNode(io, body, source);
+            if (return_requested) {
+                return_requested = false;
+                const saved = return_value;
+                return_value = 0;
+                var_store.setPositional(allocator, old_params.items);
+                recordExitStatus(saved);
+                return saved;
+            }
             var_store.setPositional(allocator, old_params.items);
-
-            return result;
+            return body_result;
         }
         return 1;
     }
 
     // Special builtins that need executor context
     if (std.mem.eql(u8, cmd_name, "eval")) {
-        return execBuiltinEval(io, source, expanded.items);
+        return execBuiltinEval(io, source, expanded);
     }
     if (std.mem.eql(u8, cmd_name, "source") or std.mem.eql(u8, cmd_name, ".")) {
-        return execBuiltinSource(io, expanded.items);
+        return execBuiltinSource(io, expanded);
     }
     if (std.mem.eql(u8, cmd_name, "exec")) {
-        return execBuiltinExec(io, expanded.items);
+        return execBuiltinExec(io, expanded);
     }
     if (std.mem.eql(u8, cmd_name, "break")) {
         if (loop_depth > 0) {
-            const n = if (expanded.items.len > 1)
-                std.fmt.parseInt(usize, expanded.items[1], 10) catch 1
+            const n = if (expanded.len > 1)
+                std.fmt.parseInt(usize, expanded[1], 10) catch 1
             else
                 1;
             break_requested = n;
@@ -424,8 +476,8 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
     if (std.mem.eql(u8, cmd_name, "continue")) {
         if (loop_depth > 0) {
-            const n = if (expanded.items.len > 1)
-                std.fmt.parseInt(usize, expanded.items[1], 10) catch 1
+            const n = if (expanded.len > 1)
+                std.fmt.parseInt(usize, expanded[1], 10) catch 1
             else
                 1;
             continue_requested = n;
@@ -434,27 +486,25 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
     if (std.mem.eql(u8, cmd_name, "return")) {
         return_requested = true;
-        if (expanded.items.len > 1) {
-            const val = std.fmt.parseInt(u8, expanded.items[1], 10) catch 0;
-            recordExitStatus(val);
-        } else {
-            recordExitStatus(0);
-        }
+        return_value = if (expanded.len > 1)
+            std.fmt.parseInt(u8, expanded[1], 10) catch var_store.getExitStatus()
+        else
+            var_store.getExitStatus();
         return 0;
     }
 
     // Check builtins first
     if (builtins.lookup(cmd_name)) |_| {
-        return builtins.run(io, cmd_name, expanded.items);
+        return builtins.run(io, cmd_name, expanded);
     }
 
     // Check applets (NOEXEC)
     if (applets.lookup(cmd_name)) |_| {
-        return applets.run(io, cmd_name, expanded.items);
+        return applets.run(io, cmd_name, expanded);
     }
 
     // Try external command via fork+execvp
-    return execExternal(cmd_name, expanded.items);
+    return execExternal(cmd_name, expanded);
 }
 
 fn execExternal(cmd: []const u8, args: [][]const u8) u8 {
@@ -674,13 +724,6 @@ fn execCStyleFor(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last_status: u8 = 0;
     var iter_count: u32 = 0;
     while (iter_count < 1000000) : (iter_count += 1) {
-        if (break_requested != 0) {
-            break_requested -= 1;
-            break;
-        }
-        if (continue_requested != 0) {
-            continue_requested -= 1;
-        }
 
         if (cond_node) |n| {
             const cond_text = nodeText(n, source);
@@ -689,6 +732,17 @@ fn execCStyleFor(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
 
         last_status = execNode(io, body_node, source);
+
+        if (break_requested != 0) {
+            break_requested -= 1;
+            if (break_requested == 0) break;
+            break;
+        }
+        if (continue_requested != 0) {
+            continue_requested -= 1;
+            if (continue_requested == 0) continue;
+            break;
+        }
 
         if (update_node) |n| {
             const upd_text = nodeText(n, source);
@@ -725,13 +779,6 @@ fn execWhile(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last_status: u8 = 0;
     var iter_count: u32 = 0;
     while (iter_count < 1000000) : (iter_count += 1) {
-        if (break_requested != 0) {
-            break_requested -= 1;
-            break;
-        }
-        if (continue_requested != 0) {
-            continue_requested -= 1;
-        }
 
         const cond_status = execNode(io, condition, source);
         const cond_true = (cond_status == 0);
@@ -743,6 +790,17 @@ fn execWhile(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
 
         last_status = execNode(io, body, source);
+
+        if (break_requested != 0) {
+            break_requested -= 1;
+            if (break_requested == 0) break;
+            break;
+        }
+        if (continue_requested != 0) {
+            continue_requested -= 1;
+            if (continue_requested == 0) continue;
+            break;
+        }
     }
 
     return last_status;
@@ -864,124 +922,43 @@ fn execPipeline(io: std.Io, node: NodeType, source: []const u8) u8 {
 const Redirect = struct { op: []const u8, target: []const u8 };
 
 fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
+    // Collect redirects from siblings
     const count = parser.childCount(node);
     if (count == 0) return 0;
+    const cmd_node = parser.childAt(node, 0);
 
-    // First child is the command
-    const cmd = parser.childAt(node, 0);
-
-    // Collect redirects
     var redirects: std.ArrayListAligned(Redirect, null) = .empty;
     defer redirects.deinit(allocator);
-
-    // Handle heredoc/herestring: create a pipe for stdin content
-    var heredoc_pipe: [2]c_int = .{ -1, -1 };
-    var heredoc_body_text: ?[]const u8 = null;
-    var is_herestring: bool = false;
 
     for (1..count) |i| {
         const child = parser.childAt(node, @intCast(i));
         const cname = nodeName(child);
         if (std.mem.eql(u8, cname, "file_redirect")) {
-            const redirect = parseFileRedirect(child, source);
-            if (redirect) |r| {
-                redirects.append(allocator, r) catch @panic("oom");
-            }
-        } else if (std.mem.eql(u8, cname, "heredoc_redirect")) {
-            // Extract heredoc body
-            const hcount = parser.childCount(child);
-            for (0..hcount) |j| {
-                const hc = parser.childAt(child, @intCast(j));
-                const hcname = nodeName(hc);
-                if (std.mem.eql(u8, hcname, "heredoc_body")) {
-                    heredoc_body_text = nodeText(hc, source);
-                    // Also record that we need to redirect stdin
-                    redirects.append(allocator, .{ .op = "<<", .target = "" }) catch @panic("oom");
-                }
-            }
-        } else if (std.mem.eql(u8, cname, "herestring_redirect")) {
-            is_herestring = true;
-            // Extract word from herestring
-            const hcount = parser.childCount(child);
-            for (0..hcount) |j| {
-                const hc = parser.childAt(child, @intCast(j));
-                const hcname = nodeName(hc);
-                if (std.mem.eql(u8, hcname, "word") or std.mem.eql(u8, hcname, "string") or
-                    std.mem.eql(u8, hcname, "simple_expansion") or std.mem.eql(u8, hcname, "expansion")) {
-                    const raw = nodeText(hc, source);
-                    var exp_result = expand.expandToken(allocator, raw) catch continue;
-                    defer exp_result.deinit();
-                    if (exp_result.words.len > 0) {
-                        heredoc_body_text = allocator.dupe(u8, exp_result.words[0]) catch continue;
-                    } else {
-                        heredoc_body_text = "";
-                    }
-                    redirects.append(allocator, .{ .op = "<<", .target = "" }) catch @panic("oom");
-                }
-            }
+            const r = parseFileRedirect(child, source) orelse continue;
+            redirects.append(allocator, r) catch @panic("oom");
         }
     }
 
-    const use_pipe = heredoc_body_text != null;
+    if (redirects.items.len == 0) return execNode(io, cmd_node, source);
 
-    // If no redirects, just execute directly
-    if (redirects.items.len == 0) return execNode(io, cmd, source);
-
-    // Create pipe for heredoc/herestring content
-    if (use_pipe) {
-        if (c.pipe(&heredoc_pipe) != 0) return 1;
+    // Apply redirects, execute, restore
+    var saved_fds: [3]c_int = .{ -1, -1, -1 };
+    if (redirects.items.len > 0) {
+        saved_fds[1] = c.dup(1);
+        saved_fds[2] = c.dup(2);
     }
 
-    // Fork to apply redirects in the child
-    const pid = c.fork();
-    if (pid < 0) {
-        if (use_pipe) { _ = c.close(heredoc_pipe[0]); _ = c.close(heredoc_pipe[1]); }
-        return 1;
+    if (applyRedirects(redirects.items) != 0) {
+        if (saved_fds[1] >= 0) { _ = c.dup2(saved_fds[1], 1); _ = c.close(saved_fds[1]); }
+        if (saved_fds[2] >= 0) { _ = c.dup2(saved_fds[2], 2); _ = c.close(saved_fds[2]); }
+        return execNode(io, cmd_node, source);
     }
 
-    if (pid == 0) {
-        // Child: apply redirects
-        if (use_pipe) {
-            // Redirect stdin from the pipe read end
-            _ = c.dup2(heredoc_pipe[0], 0);
-            _ = c.close(heredoc_pipe[0]);
-            _ = c.close(heredoc_pipe[1]);
-        }
-        if (applyRedirects(redirects.items) != 0) {
-            c._exit(1);
-        }
-        const status = execNode(io, cmd, source);
-        c._exit(status);
-    }
+    const result = execNode(io, cmd_node, source);
 
-    // Parent: if heredoc/herestring, write content to pipe
-    if (use_pipe) {
-        _ = c.close(heredoc_pipe[0]);
-        if (heredoc_body_text) |content| {
-            if (content.len > 0) {
-                _ = c.write(heredoc_pipe[1], content.ptr, @intCast(content.len));
-            }
-            // Bash adds newline after herestring content
-            if (is_herestring) {
-                _ = c.write(heredoc_pipe[1], "\n", 1);
-            }
-        } else {
-            // Empty herestring: still write the newline
-            if (is_herestring) {
-                _ = c.write(heredoc_pipe[1], "\n", 1);
-            }
-        }
-        _ = c.close(heredoc_pipe[1]);
-    }
+    if (saved_fds[1] >= 0) { _ = c.dup2(saved_fds[1], 1); _ = c.close(saved_fds[1]); }
+    if (saved_fds[2] >= 0) { _ = c.dup2(saved_fds[2], 2); _ = c.close(saved_fds[2]); }
 
-    // Parent: wait for child
-    var wstatus: c_int = 0;
-    _ = c.waitpid(pid, &wstatus, 0);
-    const result = if (c.WIFEXITED(@as(c_int, @intCast(wstatus))))
-        @as(u8, @intCast(c.WEXITSTATUS(@as(c_int, @intCast(wstatus)))))
-    else
-        1;
-    recordExitStatus(result);
     return result;
 }
 
@@ -1031,64 +1008,56 @@ fn applyRedirects(redirects: []const Redirect) u8 {
         const target_z = allocator.dupeZ(u8, r.target) catch return 1;
         defer allocator.free(target_z);
         if (std.mem.eql(u8, r.op, ">")) {
-            const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+            const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 1);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, ">>")) {
-            const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_APPEND, @as(c_uint, 0o644));
+            const fd = c.open(target_z.ptr, 1 | 64 | 1024, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 1);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, "<")) {
-            const fd = c.open(target_z.ptr, c.O_RDONLY);
+            const fd = c.open(target_z.ptr, 0);
             if (fd < 0) return 1;
             _ = c.dup2(fd, 0);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, "2>")) {
-            const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+            const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 2);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, "2>>")) {
-            const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_APPEND, @as(c_uint, 0o644));
+            const fd = c.open(target_z.ptr, 1 | 64 | 1024, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 2);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, "&>")) {
-            // &> always redirects both stdout and stderr to a file (never fd-to-fd)
-            const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+            const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 1);
             _ = c.dup2(fd, 2);
             _ = c.close(fd);
         } else if (std.mem.eql(u8, r.op, ">&")) {
-            // Try numeric target: fd-to-fd redirect (>&2 redirects stdout to stderr)
-            // Non-numeric target: redirect both stdout and stderr to file
-            const target_fd = std.fmt.parseInt(c_int, r.target, 10);
-            if (target_fd) |fd| {
+            if (std.fmt.parseInt(c_int, r.target, 10)) |fd| {
                 if (fd != 1) _ = c.dup2(fd, 1);
             } else |_| {
-                const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+                const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
                 if (fd < 0) return 1;
                 _ = c.dup2(fd, 1);
                 _ = c.dup2(fd, 2);
                 _ = c.close(fd);
             }
         } else if (std.mem.endsWith(u8, r.op, ">&")) {
-            // Pattern: "N>&" where N is the source fd, target is the destination fd (or filename)
-            // e.g., "2>&" with target "1" means dup2(1, 2) (stderr to stdout)
             const prefix = r.op[0 .. r.op.len - 2];
             const source_fd = if (prefix.len > 0)
                 std.fmt.parseInt(c_int, prefix, 10) catch 1
             else
                 1;
-            const target_fd = std.fmt.parseInt(c_int, r.target, 10);
-            if (target_fd) |fd| {
+            if (std.fmt.parseInt(c_int, r.target, 10)) |fd| {
                 _ = c.dup2(fd, source_fd);
             } else |_| {
-                // Treat target as filename
-                const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+                const fd = c.creat(target_z.ptr, @as(c_uint, 0o644));
                 if (fd < 0) return 1;
                 _ = c.dup2(fd, source_fd);
                 _ = c.close(fd);
@@ -1100,7 +1069,6 @@ fn applyRedirects(redirects: []const Redirect) u8 {
 
 fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
     const count = parser.childCount(node);
-    // Check for (( ... )) arithmetic command
     if (count >= 2) {
         const first = parser.childAt(node, 0);
         const first_txt = nodeText(first, source);
@@ -1114,7 +1082,6 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
 
-        // Check if next child is &
         var is_background = false;
         if (i + 1 < count) {
             const next = parser.childAt(node, i + 1);
@@ -1137,7 +1104,7 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
             i += 2;
         } else {
             if (isSyntaxErrorToken(cname)) {
-                const msg = "monobash: syntax error near unexpected token `;;'\n";
+                const msg = "bash: syntax error near unexpected token `;;'\n";
                 _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
                 return 2;
             }
@@ -1146,6 +1113,9 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
                 continue;
             }
             last = execNode(io, child, source);
+            if (break_requested != 0 or continue_requested != 0) {
+                return last;
+            }
             i += 1;
         }
     }
@@ -1486,22 +1456,140 @@ fn testUnaryOp(op: []const u8, val: []const u8) u8 {
     return 1;
 }
 
+fn expandBareVars(alloc: std.mem.Allocator, s: []const u8) []const u8 {
+    var result = std.ArrayListAligned(u8, null).empty;
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '\\' and i + 1 < s.len) {
+            result.append(alloc, s[i]) catch @panic("oom");
+            result.append(alloc, s[i + 1]) catch @panic("oom");
+            i += 2;
+            continue;
+        }
+        if (s[i] == '$' and i + 1 < s.len) {
+            if (s[i + 1] == '{') {
+                // Skip ${...} - handled by expandParamExpansion
+                result.append(alloc, s[i]) catch @panic("oom");
+                i += 1;
+                continue;
+            }
+            if (s[i + 1] == '(') {
+                // Skip $(...) - command substitution
+                result.append(alloc, s[i]) catch @panic("oom");
+                i += 1;
+                continue;
+            }
+            if (s[i + 1] >= '0' and s[i + 1] <= '9') {
+                // Positional params - let expandPositional handle
+                result.append(alloc, s[i]) catch @panic("oom");
+                i += 1;
+                continue;
+            }
+            if (s[i + 1] == '?' or s[i + 1] == '!' or s[i + 1] == '-' or
+                s[i + 1] == '@' or s[i + 1] == '*' or s[i + 1] == '#' or s[i + 1] == '$')
+            {
+                result.append(alloc, s[i]) catch @panic("oom");
+                i += 1;
+                continue;
+            }
+            // Bare $var reference - look up in var_store
+            var start = i + 1;
+            while (start < s.len and (std.ascii.isAlphanumeric(s[start]) or s[start] == '_')) {
+                start += 1;
+            }
+            if (start > i + 1) {
+                const var_name = s[i + 1 .. start];
+                if (var_store.get(var_name)) |v| {
+                    result.appendSlice(alloc, v.value) catch @panic("oom");
+                } else {
+                    // Variable not found, keep original
+                    result.appendSlice(alloc, s[i..start]) catch @panic("oom");
+                }
+                i = start;
+                continue;
+            }
+        }
+        result.append(alloc, s[i]) catch @panic("oom");
+        i += 1;
+    }
+    return result.toOwnedSlice(alloc) catch @panic("oom");
+}
+
 fn execVarAssign(io: std.Io, node: NodeType, source: []const u8) u8 {
     _ = io;
     const text = nodeText(node, source);
     if (std.mem.indexOfScalar(u8, text, '=')) |eq| {
-        const name = text[0..eq];
+        var name = text[0..eq];
         const value = text[eq + 1 ..];
-        if (expand.expandToken(allocator, value)) |res| {
+
+        // Handle += operator (append/add)
+        if (name.len > 1 and name[name.len - 1] == '+') {
+            const real_name = name[0 .. name.len - 1];
+            const cur_val = if (var_store.get(real_name)) |v| v.value else "0";
+            const expanded_val = if (expand.expandToken(allocator, value)) |res| blk: {
+                var list = res;
+                defer list.deinit();
+                break :blk if (list.words.len > 0) list.words[0] else "";
+            } else |_| value;
+            // Try arithmetic: cur_val + expanded_val
+            const expr = std.fmt.allocPrint(allocator, "{s}+{s}", .{ cur_val, expanded_val }) catch {
+                const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
+                defer allocator.free(new_val);
+                if (!var_store.setLocal(real_name, new_val, false)) return 1;
+                return 0;
+            };
+            defer allocator.free(expr);
+            if (expand.evalArithmeticFromStr(allocator, expr) catch null) |v| {
+                var vbuf: [32]u8 = undefined;
+                const vstr = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch {
+                    const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
+                    defer allocator.free(new_val);
+                    if (!var_store.setLocal(real_name, new_val, false)) return 1;
+                    return 0;
+                };
+                if (!var_store.setLocal(real_name, vstr, false)) return 1;
+                return 0;
+            }
+            const new_val = std.mem.concat(allocator, u8, &.{ cur_val, expanded_val }) catch @panic("oom");
+            defer allocator.free(new_val);
+            if (!var_store.setLocal(real_name, new_val, false)) return 1;
+            return 0;
+        }
+
+        // Pre-expand bare $var references
+        const expanded_value = expandBareVars(allocator, value);
+        defer allocator.free(expanded_value);
+
+        if (expand.expandToken(allocator, expanded_value)) |res| {
             var result = res;
             defer result.deinit();
             if (result.words.len > 0) {
-                _ = var_store.setLocal(name, result.words[0], false);
+                if (!var_store.setLocal(name, result.words[0], false)) {
+                    return 1;
+                }
             } else {
-                _ = var_store.setLocal(name, "", false);
+                if (!var_store.setLocal(name, "", false)) {
+                    return 1;
+                }
             }
         } else |_| {
-            _ = var_store.setLocal(name, "", false);
+            if (expand.expandTokenSafe(allocator, expanded_value)) |res2| {
+                var result2 = res2;
+                defer result2.deinit();
+                if (result2.words.len > 0) {
+                    if (!var_store.setLocal(name, result2.words[0], false)) {
+                        return 1;
+                    }
+                } else {
+                    if (!var_store.setLocal(name, "", false)) {
+                        return 1;
+                    }
+                }
+            } else |_| {
+                if (!var_store.setLocal(name, expanded_value, false)) {
+                    return 1;
+                }
+            }
         }
     }
     return 0;
@@ -1546,46 +1634,118 @@ fn execCase(io: std.Io, node: NodeType, source: []const u8) u8 {
     const ncount = parser.namedChildCount(node);
     if (ncount < 2) return 0;
 
-    const value_node = parser.namedChild(node, 0);
-    const value_text = nodeText(value_node, source);
+    const pattern_types = comptime [_][]const u8{ "word", "string", "raw_string", "simple_expansion", "expansion", "extglob_pattern" };
+    const skip_types = comptime [_][]const u8{ "|", ")", ";;", ";&", ";;&", "case", "esac", "in" };
+
+    var value_text: []const u8 = undefined;
+    var found_value = false;
+
+    const first_named = parser.namedChild(node, 0);
+    const first_name = nodeName(first_named);
+    inline for (pattern_types) |pt| {
+        if (std.mem.eql(u8, first_name, pt)) {
+            value_text = nodeText(first_named, source);
+            found_value = true;
+        }
+    }
+
+    if (!found_value) {
+        const total = parser.childCount(node);
+        for (0..total) |ci| {
+            const child = parser.childAt(node, ci);
+            const cname = nodeName(child);
+            inline for (pattern_types) |pt| {
+                if (std.mem.eql(u8, cname, pt)) {
+                    value_text = nodeText(child, source);
+                    found_value = true;
+                }
+            }
+            if (found_value) break;
+        }
+    }
+
+    if (!found_value) return 0;
 
     for (1..ncount) |i| {
         const item = parser.namedChild(node, @intCast(i));
         const iname = nodeName(item);
         if (!std.mem.eql(u8, iname, "case_item")) continue;
 
-        const item_count = parser.namedChildCount(item);
-        if (item_count == 0) continue;
+        const item_named = parser.namedChildCount(item);
+        const item_total = parser.childCount(item);
+        if (item_named == 0 and item_total == 0) continue;
 
         var item_body: ?NodeType = null;
         var raw_patterns: std.ArrayListAligned([]const u8, null) = .empty;
         defer raw_patterns.deinit(allocator);
 
-        for (0..item_count) |j| {
+        for (0..item_total) |j| {
+            const child = parser.childAt(item, j);
+            const cname = nodeName(child);
+            var is_pattern = false;
+            inline for (pattern_types) |pt| {
+                if (std.mem.eql(u8, cname, pt)) {
+                    const pat = nodeText(child, source);
+                    raw_patterns.append(allocator, pat) catch @panic("oom");
+                    is_pattern = true;
+                }
+            }
+            if (!is_pattern) {
+                var is_skip = false;
+                inline for (skip_types) |st| {
+                    if (std.mem.eql(u8, cname, st)) is_skip = true;
+                }
+                if (!is_skip) {
+                    item_body = child;
+                }
+            }
+        }
+
+        for (0..item_named) |j| {
             const child = parser.namedChild(item, @intCast(j));
             const cname = nodeName(child);
-            if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "string") or
-                std.mem.eql(u8, cname, "raw_string") or std.mem.eql(u8, cname, "simple_expansion"))
-            {
-                const pat = nodeText(child, source);
-                raw_patterns.append(allocator, pat) catch @panic("oom");
-            } else {
-                item_body = child;
+            inline for (pattern_types) |pt| {
+                if (std.mem.eql(u8, cname, pt)) {
+                    const pat = nodeText(child, source);
+                    if (std.mem.indexOfScalar(u8, pat, '|') != null) {
+                        var it = std.mem.splitScalar(u8, pat, '|');
+                        while (it.next()) |single_pat| {
+                            const trimmed = std.mem.trim(u8, single_pat, " ");
+                            if (trimmed.len > 0) {
+                                var already = false;
+                                for (raw_patterns.items) |rp| {
+                                    if (std.mem.eql(u8, rp, trimmed)) {
+                                        already = true;
+                                        break;
+                                    }
+                                }
+                                if (!already) {
+                                    raw_patterns.append(allocator, trimmed) catch @panic("oom");
+                                }
+                            }
+                        }
+                    } else {
+                        var already = false;
+                        for (raw_patterns.items) |rp| {
+                            if (std.mem.eql(u8, rp, pat)) {
+                                already = true;
+                                break;
+                            }
+                        }
+                        if (!already) {
+                            raw_patterns.append(allocator, pat) catch @panic("oom");
+                        }
+                    }
+                }
             }
         }
 
         var matched = false;
         for (raw_patterns.items) |pat| {
-            var it = std.mem.splitScalar(u8, pat, '|');
-            while (it.next()) |single_pat| {
-                const trimmed = std.mem.trim(u8, single_pat, " ");
-                if (trimmed.len == 0) continue;
-                if (globMatch(value_text, trimmed)) {
-                    matched = true;
-                    break;
-                }
+            if (globMatch(value_text, pat)) {
+                matched = true;
+                break;
             }
-            if (matched) break;
         }
 
         if (matched) {
@@ -1669,11 +1829,28 @@ fn execBuiltinSource(io: std.Io, args: [][]const u8) u8 {
         return 1;
     };
     defer allocator.free(content);
+
+    // Save old positional params and set new ones from args[2..]
+    const old_params = var_store.getPositional();
+    if (args.len > 2) {
+        var_store.setPositional(allocator, args[2..]);
+    } else {
+        var_store.setPositional(allocator, &.{});
+    }
+
     const content_z = allocator.dupeZ(u8, content) catch @panic("oom");
     defer allocator.free(content_z);
-    const tree = parser.parseString(content_z) orelse return 1;
+    const tree = parser.parseString(content_z) orelse {
+        var_store.setPositional(allocator, old_params.items);
+        return 1;
+    };
     defer parser.treeDelete(tree);
-    return exec(io, tree, content);
+    const result = exec(io, tree, content);
+
+    // Restore old positional params
+    var_store.setPositional(allocator, old_params.items);
+
+    return result;
 }
 
 fn execBuiltinExec(io: std.Io, args: [][]const u8) u8 {
