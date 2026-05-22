@@ -319,7 +319,7 @@ fn builtinCd(io: std.Io, args: [][]const u8) u8 {
     @memcpy(buf[0..dir.len], dir);
     buf[dir.len] = 0;
     if (chdir(buf[0..dir.len :0]) != 0) {
-        const msg = std.fmt.bufPrint(&buf, "cd: {s}: No such file or directory\n", .{dir}) catch "cd error\n";
+        const msg = std.fmt.bufPrint(&buf, "monobash: cd: {s}: No such file or directory\n", .{dir}) catch "monobash: cd: error\n";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
         return 1;
     }
@@ -760,6 +760,45 @@ fn builtinDisown(io: std.Io, args: [][]const u8) u8 {
 
 fn builtinKill(io: std.Io, args: [][]const u8) u8 {
     if (args.len < 2) return 1;
+
+    // Handle kill -l (list signal names)
+    if (std.mem.eql(u8, args[1], "-l")) {
+        const sig_names = [_][]const u8{
+            "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT",
+            "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2",
+            "SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT", "SIGCHLD", "SIGCONT",
+            "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU",
+            "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGPOLL", "SIGPWR",
+            "SIGSYS",
+        };
+        const rt_names = [_][]const u8{
+            "SIGRTMIN", "SIGRTMIN+1", "SIGRTMIN+2", "SIGRTMIN+3",
+            "SIGRTMIN+4", "SIGRTMIN+5", "SIGRTMIN+6", "SIGRTMIN+7",
+            "SIGRTMIN+8", "SIGRTMIN+9", "SIGRTMIN+10", "SIGRTMIN+11",
+            "SIGRTMIN+12", "SIGRTMIN+13", "SIGRTMIN+14", "SIGRTMIN+15",
+            "SIGRTMAX-14", "SIGRTMAX-13", "SIGRTMAX-12", "SIGRTMAX-11",
+            "SIGRTMAX-10", "SIGRTMAX-9", "SIGRTMAX-8", "SIGRTMAX-7",
+            "SIGRTMAX-6", "SIGRTMAX-5", "SIGRTMAX-4", "SIGRTMAX-3",
+            "SIGRTMAX-2", "SIGRTMAX-1", "SIGRTMAX",
+        };
+        const stdout = std.Io.File.stdout();
+        var buf: [8192]u8 = undefined;
+        var pos: usize = 0;
+        for (sig_names, 1..) |name, i| {
+            const line = std.fmt.bufPrint(buf[pos..], "{d}) {s}\t", .{i, name}) catch continue;
+            pos += line.len;
+        }
+        for (rt_names, 32..) |name, i| {
+            const line = std.fmt.bufPrint(buf[pos..], "{d}) {s}\t", .{i, name}) catch continue;
+            pos += line.len;
+        }
+        if (pos > 0) pos -= 1;
+        buf[pos] = '\n';
+        pos += 1;
+        _ = std.Io.File.writeStreamingAll(stdout, io, buf[0..pos]) catch {};
+        return 0;
+    }
+
     var signum: c_int = 15;
     var pid_start: usize = 1;
     if (std.mem.startsWith(u8, args[1], "-")) {
@@ -794,24 +833,41 @@ fn builtinAlias(io: std.Io, args: [][]const u8) u8 {
         }
         return 0;
     }
+    var had_error = false;
     for (args[1..]) |arg| {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
             const val = arg[eq+1..];
             var_store.setAlias(name, val);
         } else {
-            var_store.setAlias(arg, "");
+            if (var_store.getAlias(arg)) |val| {
+                var buf: [1024]u8 = undefined;
+                const line = std.fmt.bufPrint(&buf, "alias {s}='{s}'\n", .{arg, val}) catch continue;
+                _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, line) catch {};
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "monobash: alias: {s}: not found\n", .{arg}) catch "monobash: alias: error\n";
+                _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+                had_error = true;
+            }
         }
     }
-    return 0;
+    return if (had_error) 1 else 0;
 }
 
 fn builtinUnalias(io: std.Io, args: [][]const u8) u8 {
-    _ = io;
+    var had_error = false;
     for (args[1..]) |name| {
-        var_store.removeAlias(name);
+        if (var_store.getAlias(name) == null) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "monobash: unalias: {s}: not found\n", .{name}) catch "monobash: unalias: error\n";
+            _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+            had_error = true;
+        } else {
+            var_store.removeAlias(name);
+        }
     }
-    return 0;
+    return if (had_error) 1 else 0;
 }
 
 fn builtinBind(_: std.Io, _: [][]const u8) u8 { return 0; }
@@ -891,7 +947,13 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
     for (args[var_start..]) |arg| {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
-            const val = arg[eq+1..];
+            var val = arg[eq+1..];
+            if (flags & 4 != 0 and val.len > 0) {
+                if (evalLetExpr(val)) |v| {
+                    var vbuf: [32]u8 = undefined;
+                    val = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch val;
+                }
+            }
             if (flags & 16 != 0) {
                 var_store.set(name, val, true);
             } else {
@@ -928,13 +990,28 @@ fn builtinDirs(io: std.Io, args: [][]const u8) u8 {
 fn builtinPushd(io: std.Io, args: [][]const u8) u8 {
     const dir = if (args.len >= 2) args[1] else "~";
     var_store.pushDir(dir);
+    var buf: [4096]u8 = undefined;
+    if (dir.len < buf.len) {
+        @memcpy(buf[0..dir.len], dir);
+        buf[dir.len] = 0;
+        _ = chdir(buf[0..dir.len :0]);
+    }
     return builtinDirs(io, args);
 }
 
-fn builtinPopd(io: std.Io, _: [][]const u8) u8 {
-    _ = io;
+fn builtinPopd(io: std.Io, args: [][]const u8) u8 {
     var_store.popDir();
-    return 0;
+    const dirs = var_store.getDirStack();
+    if (dirs.len > 0) {
+        const top = dirs[dirs.len - 1];
+        var buf: [4096]u8 = undefined;
+        if (top.len < buf.len) {
+            @memcpy(buf[0..top.len], top);
+            buf[top.len] = 0;
+            _ = chdir(buf[0..top.len :0]);
+        }
+    }
+    return builtinDirs(io, args);
 }
 
 fn builtinEnable(_: std.Io, _: [][]const u8) u8 { return 0; }
@@ -970,24 +1047,108 @@ fn builtinHistory(io: std.Io, _: [][]const u8) u8 {
     return 0;
 }
 
+fn evalLetExpr(expr: []const u8) ?i64 {
+    if (std.fmt.parseInt(i64, expr, 10)) |val| return val else |_| {}
+    var full_buf: [4096]u8 = undefined;
+    if (expr.len + 7 > full_buf.len) return null;
+    full_buf[0] = '$';
+    full_buf[1] = '(';
+    full_buf[2] = '(';
+    @memcpy(full_buf[3..][0..expr.len], expr);
+    full_buf[3 + expr.len] = ')';
+    full_buf[4 + expr.len] = ')';
+    const full = full_buf[0 .. 5 + expr.len];
+    if (expand.expandToken(std.heap.page_allocator, full)) |result| {
+        defer result.deinit();
+        if (result.words.len > 0) {
+            return std.fmt.parseInt(i64, result.words[0], 10) catch null;
+        }
+    } else |_| {}
+    return null;
+}
+
 fn builtinLet(io: std.Io, args: [][]const u8) u8 {
     _ = io;
     if (args.len < 2) return 1;
+    var last_val: i64 = 0;
     for (args[1..]) |expr| {
-        var buf: [32]u8 = undefined;
-        if (std.fmt.parseInt(i64, expr, 10)) |val| {
-            const s = std.fmt.bufPrint(&buf, "{d}", .{if (val != 0) @as(u8, 0) else @as(u8, 1)}) catch "0";
-            var_store.set("?", s, false);
-            return if (val != 0) 0 else 1;
-        } else |_| {
-            if (expr.len > 0) {
-                var_store.set("?", "0", false);
-                return 0;
+        const trimmed = std.mem.trim(u8, expr, " ");
+        if (trimmed.len == 0) continue;
+
+        if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq| {
+            if (eq > 0 and (trimmed[eq-1] == '+' or trimmed[eq-1] == '-' or
+                trimmed[eq-1] == '*' or trimmed[eq-1] == '/' or trimmed[eq-1] == '%'))
+            {
+                const name = std.mem.trim(u8, trimmed[0..eq-1], " ");
+                const val_expr = std.mem.trim(u8, trimmed[eq+1..], " ");
+                const cur_str = if (var_store.get(name)) |v| v.value else "0";
+                const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+                const rhs_val = evalLetExpr(val_expr) orelse 0;
+                last_val = switch (trimmed[eq-1]) {
+                    '+' => cur_val + rhs_val,
+                    '-' => cur_val - rhs_val,
+                    '*' => cur_val * rhs_val,
+                    '/' => if (rhs_val == 0) 0 else @divTrunc(cur_val, rhs_val),
+                    '%' => if (rhs_val == 0) 0 else @mod(cur_val, rhs_val),
+                    else => 0,
+                };
+                var buf: [32]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+                var_store.set(name, s, false);
+            } else if (eq > 0 and trimmed[eq-1] != '=' and trimmed[eq-1] != '!' and
+                trimmed[eq-1] != '<' and trimmed[eq-1] != '>')
+            {
+                const name = std.mem.trim(u8, trimmed[0..eq], " ");
+                const val_expr = std.mem.trim(u8, trimmed[eq+1..], " ");
+                last_val = evalLetExpr(val_expr) orelse 0;
+                if (name.len > 0) {
+                    var buf: [32]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+                    var_store.set(name, s, false);
+                }
+            } else {
+                last_val = evalLetExpr(trimmed) orelse 0;
             }
-            return 1;
+        } else if (trimmed.len >= 2 and std.mem.eql(u8, trimmed[trimmed.len-2..], "++")) {
+            const name = std.mem.trim(u8, trimmed[0..trimmed.len-2], " ");
+            const cur_str = if (var_store.get(name)) |v| v.value else "0";
+            const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+            last_val = cur_val + 1;
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+            var_store.set(name, s, false);
+        } else if (trimmed.len >= 2 and std.mem.eql(u8, trimmed[trimmed.len-2..], "--")) {
+            const name = std.mem.trim(u8, trimmed[0..trimmed.len-2], " ");
+            const cur_str = if (var_store.get(name)) |v| v.value else "0";
+            const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+            last_val = cur_val - 1;
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+            var_store.set(name, s, false);
+        } else if (trimmed.len >= 2 and trimmed[0] == '+' and trimmed[1] == '+') {
+            const name = std.mem.trim(u8, trimmed[2..], " ");
+            const cur_str = if (var_store.get(name)) |v| v.value else "0";
+            const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+            last_val = cur_val + 1;
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+            var_store.set(name, s, false);
+        } else if (trimmed.len >= 2 and trimmed[0] == '-' and trimmed[1] == '-') {
+            const name = std.mem.trim(u8, trimmed[2..], " ");
+            const cur_str = if (var_store.get(name)) |v| v.value else "0";
+            const cur_val = std.fmt.parseInt(i64, cur_str, 10) catch 0;
+            last_val = cur_val - 1;
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{last_val}) catch "0";
+            var_store.set(name, s, false);
+        } else {
+            last_val = evalLetExpr(trimmed) orelse 0;
         }
     }
-    return 0;
+    var qbuf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&qbuf, "{d}", .{if (last_val != 0) @as(u8, 0) else @as(u8, 1)}) catch "0";
+    var_store.set("?", s, false);
+    return if (last_val != 0) 0 else 1;
 }
 
 fn builtinLogout(_: std.Io, _: [][]const u8) u8 { return 0; }
@@ -999,9 +1160,40 @@ fn builtinMapfile(io: std.Io, args: [][]const u8) u8 {
     return 1;
 }
 
+pub var shopt_nullglob: bool = false;
+pub var shopt_dotglob: bool = false;
+pub var shopt_extglob: bool = false;
+pub var shopt_nocaseglob: bool = false;
+
 fn builtinShopt(io: std.Io, args: [][]const u8) u8 {
-    _ = io;
-    _ = args;
+    if (args.len == 1) {
+        const stdout = std.Io.File.stdout();
+        const options = comptime [_]struct { name: []const u8, state: *bool }{
+            .{ .name = "dotglob",    .state = &shopt_dotglob },
+            .{ .name = "extglob",    .state = &shopt_extglob },
+            .{ .name = "nocaseglob", .state = &shopt_nocaseglob },
+            .{ .name = "nullglob",   .state = &shopt_nullglob },
+        };
+        for (options) |opt| {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}    \t{s}\n", .{ opt.name, if (opt.state.*) "on" else "off" }) catch continue;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+        }
+        return 0;
+    }
+    if (args.len >= 3) {
+        const flag = args[1];
+        const opt = args[2];
+        if (std.mem.eql(u8, opt, "nullglob")) {
+            shopt_nullglob = std.mem.eql(u8, flag, "-s");
+        } else if (std.mem.eql(u8, opt, "dotglob")) {
+            shopt_dotglob = std.mem.eql(u8, flag, "-s");
+        } else if (std.mem.eql(u8, opt, "extglob")) {
+            shopt_extglob = std.mem.eql(u8, flag, "-s");
+        } else if (std.mem.eql(u8, opt, "nocaseglob")) {
+            shopt_nocaseglob = std.mem.eql(u8, flag, "-s");
+        }
+    }
     return 0;
 }
 

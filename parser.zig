@@ -113,5 +113,17 @@ pub fn rootNode(tree: *const c.TSTree) c.TSNode {
 }
 
 pub fn treeDelete(tree: *c.TSTree) void {
-    c.ts_tree_delete(tree);
+    return c.ts_tree_delete(tree);
+}
+
+pub fn nodeHasError(node: NodeType) bool {
+    return c.ts_node_has_error(node);
+}
+
+pub fn nodeStartByte(node: NodeType) usize {
+    return @intCast(c.ts_node_start_byte(node));
+}
+
+pub fn nodeEndByte(node: NodeType) usize {
+    return @intCast(c.ts_node_end_byte(node));
 }

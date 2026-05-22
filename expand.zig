@@ -15,7 +15,7 @@ pub const WordList = struct {
     words: [][]const u8,
     allocator: std.mem.Allocator,
 
-    pub fn deinit(self: *WordList) void {
+    pub fn deinit(self: *const WordList) void {
         for (self.words) |w| self.allocator.free(w);
         self.allocator.free(self.words);
     }
@@ -50,6 +50,14 @@ fn expandRaw(allocator: std.mem.Allocator, raw_z: [:0]u8, flags: c_int) WordExpE
 pub fn expandToken(allocator: std.mem.Allocator, raw: []const u8) WordExpError!WordList {
     const cleaned = try stripLineContinuation(allocator, raw);
     defer allocator.free(cleaned);
+
+    // Check if the entire token is a '...' single-quoted string
+    if (cleaned.len >= 2 and cleaned[0] == '\'' and cleaned[cleaned.len - 1] == '\'') {
+        const content = cleaned[1 .. cleaned.len - 1];
+        var words: std.ArrayListAligned([]const u8, null) = .empty;
+        try words.append(allocator, try allocator.dupe(u8, content));
+        return WordList{ .words = try words.toOwnedSlice(allocator), .allocator = allocator };
+    }
 
     // Check if the entire token is a $'...' ANSI-C quoted string
     if (isPureAnsiC(cleaned)) {
@@ -153,7 +161,7 @@ fn parseAnsiCString(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 
 fn expandAnsiC(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     // Handle $'...' ANSI-C quoting embedded in non-pure tokens
-    // For non-pure ANSI-C, we embed the expanded content (but wordpexp may reject newlines etc.)
+    // Parse escape sequences inside the $'...' portion
     var result = std.ArrayListAligned(u8, null).empty;
     try result.ensureTotalCapacity(allocator, raw.len);
     var i: usize = 0;
@@ -165,8 +173,70 @@ fn expandAnsiC(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
                 i += 1;
                 continue;
             };
-            const content = raw[start..end];
-            try result.appendSlice(allocator, content);
+            const ansi_content = raw[start..end];
+            // Parse escape sequences in the ANSI-C string content
+            var j: usize = 0;
+            while (j < ansi_content.len) {
+                if (ansi_content[j] == '\\' and j + 1 < ansi_content.len) {
+                    const next = ansi_content[j + 1];
+                    switch (next) {
+                        'n' => { try result.append(allocator, '\n'); j += 2; },
+                        't' => { try result.append(allocator, '\t'); j += 2; },
+                        'r' => { try result.append(allocator, '\r'); j += 2; },
+                        '\\' => { try result.append(allocator, '\\'); j += 2; },
+                        '\'' => { try result.append(allocator, '\''); j += 2; },
+                        '"' => { try result.append(allocator, '"'); j += 2; },
+                        'a' => { try result.append(allocator, '\x07'); j += 2; },
+                        'b' => { try result.append(allocator, '\x08'); j += 2; },
+                        'e' => { try result.append(allocator, '\x1B'); j += 2; },
+                        'f' => { try result.append(allocator, '\x0C'); j += 2; },
+                        'v' => { try result.append(allocator, '\x0B'); j += 2; },
+                        '0'...'7' => {
+                            var octal_val: u8 = 0;
+                            var digits: u8 = 0;
+                            while (j + 1 < ansi_content.len and ansi_content[j + 1] >= '0' and ansi_content[j + 1] <= '7' and digits < 3) : (digits += 1) {
+                                j += 1;
+                                octal_val = octal_val * 8 + (ansi_content[j] - '0');
+                            }
+                            try result.append(allocator, octal_val);
+                            j += 1;
+                        },
+                        'x' => {
+                            j += 2;
+                            var hex_val: u8 = 0;
+                            var digits: u8 = 0;
+                            while (j < ansi_content.len and digits < 2) : (digits += 1) {
+                                const ch = ansi_content[j];
+                                hex_val = hex_val * 16 + switch (ch) {
+                                    '0'...'9' => ch - '0',
+                                    'a'...'f' => ch - 'a' + 10,
+                                    'A'...'F' => ch - 'A' + 10,
+                                    else => break,
+                                };
+                                j += 1;
+                            }
+                            try result.append(allocator, hex_val);
+                        },
+                        'c' => {
+                            if (j + 2 < ansi_content.len) {
+                                const ctrl = ansi_content[j + 2];
+                                try result.append(allocator, @as(u8, @intCast(ctrl & 0x1F)));
+                                j += 3;
+                            } else {
+                                j += 2;
+                            }
+                        },
+                        else => {
+                            try result.append(allocator, '\\');
+                            try result.append(allocator, next);
+                            j += 2;
+                        },
+                    }
+                } else {
+                    try result.append(allocator, ansi_content[j]);
+                    j += 1;
+                }
+            }
             i = end + 1;
         } else {
             try result.append(allocator, raw[i]);

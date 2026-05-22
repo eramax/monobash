@@ -72,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Interactive / REPL mode
+    var_store.interactive = true;
     const c_stdio = @cImport({
         @cInclude("stdio.h");
     });

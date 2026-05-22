@@ -34,6 +34,13 @@ pub fn init(alloc: std.mem.Allocator) void {
 
 pub fn exec(io: std.Io, tree: *const parser.TreeType, src: []const u8) u8 {
     const node = parser.rootNode(tree);
+
+    if (parser.nodeHasError(node)) {
+        const msg = "monobash: syntax error near unexpected token\n";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+        return 2;
+    }
+
     const status = execNode(io, node, src);
 
     // Fire EXIT trap (only for top-level shell execution)
@@ -150,6 +157,7 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
     const count = parser.childCount(node);
     var i: usize = 0;
+    var prev_was_semi = false;
     while (i < count) {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
@@ -164,6 +172,7 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
 
         if (is_background) {
+            prev_was_semi = false;
             const pid = c.fork();
             if (pid < 0) return 1;
             if (pid == 0) {
@@ -176,11 +185,22 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
             var_store.set("!", pid_str, false);
             i += 2;
         } else {
-            // Skip non-statement children (terminators like ;)
+            if (isSyntaxErrorToken(cname)) {
+                const msg = "monobash: syntax error near unexpected token `;;'\n";
+                _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+                return 2;
+            }
             if (isTerminator(cname)) {
+                if (prev_was_semi and std.mem.eql(u8, cname, ";")) {
+                    const msg = "monobash: syntax error near unexpected token `;;'\n";
+                    _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+                    return 2;
+                }
+                prev_was_semi = std.mem.eql(u8, cname, ";");
                 i += 1;
                 continue;
             }
+            prev_was_semi = false;
             const status = execNode(io, child, source);
             last = status;
             recordExitStatus(status);
@@ -196,8 +216,11 @@ fn execProgram(io: std.Io, node: NodeType, source: []const u8) u8 {
 fn isTerminator(name: []const u8) bool {
     return std.mem.eql(u8, name, ";") or
         std.mem.eql(u8, name, "&") or
-        std.mem.eql(u8, name, ";;") or
         std.mem.eql(u8, name, "|");
+}
+
+fn isSyntaxErrorToken(name: []const u8) bool {
+    return std.mem.eql(u8, name, ";;");
 }
 
 fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -253,12 +276,12 @@ fn execCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
 
     // Redirected, compound, if, for, etc. — recurse into children
+    var last: u8 = 0;
     for (0..count) |i| {
         const child = parser.childAt(node, i);
-        const status = execNode(io, child, source);
-        _ = status;
+        last = execNode(io, child, source);
     }
-    return 0;
+    return last;
 }
 
 fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -274,19 +297,64 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
     }
 
-    for (0..count) |i| {
+    var i: usize = 0;
+    while (i < count) {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
         var is_skip = false;
         inline for (.{ "redirected_statement", "heredoc_body", "file_redirect",
-            "file_descriptor", "herestring_redirect", "heredoc_start", "variable_assignment" }) |st| {
+            "file_descriptor", "herestring_redirect", "heredoc_redirect", "heredoc_start", "variable_assignment" }) |st| {
             if (std.mem.eql(u8, cname, st)) {
                 is_skip = true;
             }
         }
-        if (is_skip) continue;
+        if (is_skip) {
+            i += 1;
+            continue;
+        }
 
-        const raw = nodeText(child, source);
+        var raw = nodeText(child, source);
+
+        // Detect backslash-newline continuation between word/string nodes.
+        // tree-sitter-bash's lexer handles \<newline> by consuming the backslash
+        // and newline without including them in the token, but the surrounding
+        // text becomes separate word tokens. We merge them back here.
+        {
+            var next_i = i + 1;
+            while (next_i < count) {
+                const next_child = parser.childAt(node, next_i);
+                const next_name = nodeName(next_child);
+
+                var next_is_skip = false;
+                inline for (.{ "redirected_statement", "heredoc_body", "file_redirect",
+                    "file_descriptor", "herestring_redirect", "heredoc_redirect", "heredoc_start", "variable_assignment" }) |st| {
+                    if (std.mem.eql(u8, next_name, st)) {
+                        next_is_skip = true;
+                    }
+                }
+                if (next_is_skip) {
+                    next_i += 1;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, next_name, "word") or std.mem.eql(u8, next_name, "string")) {
+                    const end_byte = parser.nodeEndByte(child);
+                    const next_start = parser.nodeStartByte(next_child);
+                    if (next_start > end_byte) {
+                        const gap = source[end_byte..next_start];
+                        if (std.mem.indexOf(u8, gap, "\\\n") != null or std.mem.indexOf(u8, gap, "\\\r\n") != null) {
+                            const next_raw = nodeText(next_child, source);
+                            raw = std.mem.concat(allocator, u8, &.{ raw, next_raw }) catch raw;
+                            i = next_i;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                break;
+            }
+        }
+
         if (expand.expandToken(allocator, raw)) |result| {
             var list = result;
             defer list.deinit();
@@ -300,6 +368,7 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
             continue;
         }
+        i += 1;
     }
 
     if (expanded.items.len == 0) return 0;
@@ -806,6 +875,7 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
     // Handle heredoc/herestring: create a pipe for stdin content
     var heredoc_pipe: [2]c_int = .{ -1, -1 };
     var heredoc_body_text: ?[]const u8 = null;
+    var is_herestring: bool = false;
 
     for (1..count) |i| {
         const child = parser.childAt(node, @intCast(i));
@@ -828,6 +898,7 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
                 }
             }
         } else if (std.mem.eql(u8, cname, "herestring_redirect")) {
+            is_herestring = true;
             // Extract word from herestring
             const hcount = parser.childCount(child);
             for (0..hcount) |j| {
@@ -881,12 +952,21 @@ fn execRedirected(io: std.Io, node: NodeType, source: []const u8) u8 {
         c._exit(status);
     }
 
-    // Parent: if heredoc, write content to pipe
+    // Parent: if heredoc/herestring, write content to pipe
     if (use_pipe) {
         _ = c.close(heredoc_pipe[0]);
         if (heredoc_body_text) |content| {
             if (content.len > 0) {
                 _ = c.write(heredoc_pipe[1], content.ptr, @intCast(content.len));
+            }
+            // Bash adds newline after herestring content
+            if (is_herestring) {
+                _ = c.write(heredoc_pipe[1], "\n", 1);
+            }
+        } else {
+            // Empty herestring: still write the newline
+            if (is_herestring) {
+                _ = c.write(heredoc_pipe[1], "\n", 1);
             }
         }
         _ = c.close(heredoc_pipe[1]);
@@ -907,21 +987,41 @@ fn parseFileRedirect(node: NodeType, source: []const u8) ?Redirect {
     const total = parser.childCount(node);
     if (total < 2) return null;
 
-    // First child is the operator (unnamed token)
-    const op_node = parser.childAt(node, 0);
-    const op_text = nodeText(op_node, source);
+    var op_text: ?[]const u8 = null;
+    var target_text: ?[]const u8 = null;
+    var source_fd: ?[]const u8 = null;
 
-    // Find the word child (filename)
-    for (1..total) |i| {
+    for (0..total) |i| {
         const child = parser.childAt(node, @intCast(i));
         const cname = nodeName(child);
-        if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "string") or
-            std.mem.eql(u8, cname, "file_descriptor")) {
-            const target = nodeText(child, source);
-            return .{ .op = op_text, .target = target };
+        const text = nodeText(child, source);
+
+        if (std.mem.eql(u8, cname, "file_descriptor")) {
+            source_fd = text;
+        } else if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "string")) {
+            target_text = text;
+        } else if (cname.len == 0) {
+            // unnamed token = operator
+            op_text = text;
         }
     }
-    return null;
+
+    const target = target_text orelse return null;
+    const op = op_text orelse return null;
+
+    // If source fd exists (e.g., "2" for "2>&1"), prepend it to op
+    if (source_fd) |fd| {
+        var buf: [32]u8 = undefined;
+        const combined = std.fmt.bufPrint(&buf, "{s}{s}", .{ fd, op }) catch {
+            return .{ .op = op, .target = target };
+        };
+        const dup = allocator.dupe(u8, combined) catch {
+            return .{ .op = op, .target = target };
+        };
+        return .{ .op = dup, .target = target };
+    }
+
+    return .{ .op = op, .target = target };
 }
 
 fn applyRedirects(redirects: []const Redirect) u8 {
@@ -953,24 +1053,43 @@ fn applyRedirects(redirects: []const Redirect) u8 {
             if (fd < 0) return 1;
             _ = c.dup2(fd, 2);
             _ = c.close(fd);
-        } else if (std.mem.eql(u8, r.op, ">&")) {
-            // Redirect stderr and stdout to file
+        } else if (std.mem.eql(u8, r.op, "&>")) {
+            // &> always redirects both stdout and stderr to a file (never fd-to-fd)
             const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
             if (fd < 0) return 1;
             _ = c.dup2(fd, 1);
             _ = c.dup2(fd, 2);
             _ = c.close(fd);
-        } else if (std.mem.eql(u8, r.op, ">&1") or std.mem.eql(u8, r.op, "2>&1") or std.mem.eql(u8, r.op, "1>&2")) {
-            // Parse fd redirect like 2>&1
-            // Extract source fd from op and target from word
-            _ = r.op;
-            // Simple: if op is "2>&1", redirect fd 2 to 1
-            // For "2>&1", the source is derived from context
-            // For now, handle common cases
-            if (std.mem.eql(u8, r.op, "2>&1")) {
-                _ = c.dup2(1, 2);
-            } else if (std.mem.eql(u8, r.op, "1>&2")) {
-                _ = c.dup2(2, 1);
+        } else if (std.mem.eql(u8, r.op, ">&")) {
+            // Try numeric target: fd-to-fd redirect (>&2 redirects stdout to stderr)
+            // Non-numeric target: redirect both stdout and stderr to file
+            const target_fd = std.fmt.parseInt(c_int, r.target, 10);
+            if (target_fd) |fd| {
+                if (fd != 1) _ = c.dup2(fd, 1);
+            } else |_| {
+                const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+                if (fd < 0) return 1;
+                _ = c.dup2(fd, 1);
+                _ = c.dup2(fd, 2);
+                _ = c.close(fd);
+            }
+        } else if (std.mem.endsWith(u8, r.op, ">&")) {
+            // Pattern: "N>&" where N is the source fd, target is the destination fd (or filename)
+            // e.g., "2>&" with target "1" means dup2(1, 2) (stderr to stdout)
+            const prefix = r.op[0 .. r.op.len - 2];
+            const source_fd = if (prefix.len > 0)
+                std.fmt.parseInt(c_int, prefix, 10) catch 1
+            else
+                1;
+            const target_fd = std.fmt.parseInt(c_int, r.target, 10);
+            if (target_fd) |fd| {
+                _ = c.dup2(fd, source_fd);
+            } else |_| {
+                // Treat target as filename
+                const fd = c.open(target_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+                if (fd < 0) return 1;
+                _ = c.dup2(fd, source_fd);
+                _ = c.close(fd);
             }
         }
     }
@@ -1015,6 +1134,11 @@ fn execCompound(io: std.Io, node: NodeType, source: []const u8) u8 {
             var_store.set("!", pid_str, false);
             i += 2;
         } else {
+            if (isSyntaxErrorToken(cname)) {
+                const msg = "monobash: syntax error near unexpected token `;;'\n";
+                _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+                return 2;
+            }
             if (isTerminator(cname)) {
                 i += 1;
                 continue;
@@ -1046,7 +1170,35 @@ fn execArithmeticCmd(io: std.Io, node: NodeType, source: []const u8) u8 {
     }
     const expr_text = expr_buf[0..pos];
     if (expr_text.len == 0) return 0;
-    const val = evalArithmetic(allocator, expr_text) orelse return 1;
+    const trimmed = std.mem.trim(u8, expr_text, " ");
+
+    // Check for variable assignment: name = expression
+    if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq| {
+        if (eq > 0 and trimmed[eq-1] != '=' and trimmed[eq-1] != '!' and
+            trimmed[eq-1] != '<' and trimmed[eq-1] != '>' and
+            trimmed[eq-1] != '+' and trimmed[eq-1] != '-' and
+            trimmed[eq-1] != '*' and trimmed[eq-1] != '/' and trimmed[eq-1] != '%')
+        {
+            const name = std.mem.trim(u8, trimmed[0..eq], " ");
+            const val_expr = std.mem.trim(u8, trimmed[eq+1..], " ");
+            if (name.len > 0 and val_expr.len > 0) {
+                if (evalArithmetic(allocator, val_expr)) |val| {
+                    var vbuf: [32]u8 = undefined;
+                    const val_str = std.fmt.bufPrint(&vbuf, "{d}", .{val}) catch "0";
+                    var_store.set(name, val_str, false);
+                    const is_zero = (val == 0);
+                    const exit_val: u8 = if (is_zero) 1 else 0;
+                    var qbuf: [16]u8 = undefined;
+                    const s = std.fmt.bufPrint(&qbuf, "{d}", .{exit_val}) catch "0";
+                    var_store.set("?", s, false);
+                    return exit_val;
+                }
+                return 1;
+            }
+        }
+    }
+
+    const val = evalArithmetic(allocator, trimmed) orelse return 1;
     const is_zero = (val == 0);
     const exit_val: u8 = if (is_zero) 1 else 0;
     var buf: [16]u8 = undefined;
@@ -1102,9 +1254,9 @@ fn c_getpid() c_int {
 }
 
 fn execNegated(io: std.Io, node: NodeType, source: []const u8) u8 {
-    const count = parser.childCount(node);
+    const count = parser.namedChildCount(node);
     if (count == 0) return 0;
-    const child = parser.childAt(node, 0);
+    const child = parser.namedChild(node, 0);
     const status = execNode(io, child, source);
     const result: u8 = if (status == 0) 1 else 0;
     recordExitStatus(result);

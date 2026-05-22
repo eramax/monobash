@@ -21,6 +21,7 @@ var positional_params: std.ArrayListAligned([]const u8, null) = .empty;
 pub var errexit: bool = false;
 pub var nounset: bool = false;
 pub var pipefail: bool = false;
+pub var interactive: bool = false;
 
 pub fn init(allocator: std.mem.Allocator) void {
     global_arena = std.heap.ArenaAllocator.init(allocator);
@@ -34,12 +35,20 @@ pub fn init(allocator: std.mem.Allocator) void {
     alias_table = std.StringHashMap([]const u8).init(arena);
     dir_stack = std.ArrayListAligned([]const u8, null).empty;
     readonly_set = std.StringHashMap(void).init(arena);
+
+    // Initialize directory stack with PWD
+    var cwd_buf: [4096]u8 = undefined;
+    if (getcwd(&cwd_buf, cwd_buf.len)) |pwd_ptr| {
+        const pwd = std.mem.sliceTo(pwd_ptr, 0);
+        dir_stack.append(arena, allocValue(pwd)) catch {};
+    }
     initJobTable();
 
     // Get HOME via C getenv
     const home = c_getenv("HOME") orelse "/";
     set("IFS", " \t\n", false);
-    set("PATH", "/usr/local/bin:/usr/bin:/bin", false);
+    const path = c_getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
+    set("PATH", path, false);
     set("HOME", home, false);
 
     // Standard bash special variables
@@ -47,6 +56,59 @@ pub fn init(allocator: std.mem.Allocator) void {
     var pid_buf: [16]u8 = undefined;
     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{@as(c_int, getpid())}) catch "0";
     set("BASHPID", pid_str, false);
+
+    // Bash compatibility variables
+    set("BASH_VERSION", "5.2.37(1)-monobash", false);
+    set("SECONDS", "0", false);
+
+    // RANDOM — generate a random value 0-32767
+    var random_buf: [16]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(time(null))) +% @as(u64, @intCast(getpid())));
+    const random_val = prng.random().int(u16) & 0x7FFF;
+    const random_str = std.fmt.bufPrint(&random_buf, "{d}", .{random_val}) catch "0";
+    set("RANDOM", random_str, false);
+
+    // UID, EUID, PPID
+    var uid_buf: [16]u8 = undefined;
+    const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{getuid()}) catch "0";
+    set("UID", uid_str, false);
+
+    var euid_buf: [16]u8 = undefined;
+    const euid_str = std.fmt.bufPrint(&euid_buf, "{d}", .{geteuid()}) catch "0";
+    set("EUID", euid_str, false);
+
+    var ppid_buf: [16]u8 = undefined;
+    const ppid_str = std.fmt.bufPrint(&ppid_buf, "{d}", .{getppid()}) catch "0";
+    set("PPID", ppid_str, false);
+
+    // HOSTNAME — try environment first, fallback to gethostname()
+    const hostname_env = c_getenv("HOSTNAME");
+    if (hostname_env) |h| {
+        set("HOSTNAME", h, false);
+    } else {
+        var hostname_buf: [256]u8 = undefined;
+        if (gethostname(&hostname_buf, hostname_buf.len) == 0) {
+            const len = std.mem.indexOfScalar(u8, &hostname_buf, 0) orelse hostname_buf.len;
+            set("HOSTNAME", hostname_buf[0..len], false);
+        } else {
+            set("HOSTNAME", "localhost", false);
+        }
+    }
+
+    // SHLVL — inherit from parent and increment
+    var shlvl_buf: [16]u8 = undefined;
+    const parent_shlvl = c_getenv("SHLVL") orelse "0";
+    const shlvl = std.fmt.parseInt(u32, parent_shlvl, 10) catch 0;
+    const shlvl_str = std.fmt.bufPrint(&shlvl_buf, "{d}", .{shlvl + 1}) catch "1";
+    set("SHLVL", shlvl_str, false);
+
+    // Static / initial values
+    set("LINENO", "0", false);
+
+    // EPOCHSECONDS
+    var epoch_buf: [32]u8 = undefined;
+    const epoch_str = std.fmt.bufPrint(&epoch_buf, "{d}", .{time(null)}) catch "0";
+    set("EPOCHSECONDS", epoch_str, false);
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -86,6 +148,12 @@ fn allocValue(s: []const u8) []const u8 {
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn getpid() c_int;
+extern "c" fn getuid() c_int;
+extern "c" fn geteuid() c_int;
+extern "c" fn getppid() c_int;
+extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
+extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
+extern "c" fn time(timer: ?*i64) i64;
 
 pub fn set(name: []const u8, value: []const u8, exported: bool) void {
     if (isReadonly(name)) return;
@@ -319,7 +387,17 @@ pub fn getSpecial(c: u8) []const u8 {
         '!' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{last_bg_pid}) catch "0",
         '$' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{@as(c_int, getpid())}) catch "0",
         '#' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{positional_params.items.len}) catch "0",
-        '-' => return "hB",
+        '-' => {
+            // Build dynamic flags string reflecting shell state
+            var buf: [16]u8 = undefined;
+            var pos: usize = 0;
+            if (interactive) { buf[pos] = 'i'; pos += 1; }
+            buf[pos] = 'h'; pos += 1;
+            if (errexit) { buf[pos] = 'e'; pos += 1; }
+            if (nounset) { buf[pos] = 'u'; pos += 1; }
+            buf[pos] = 'B'; pos += 1;
+            return global_arena.allocator().dupe(u8, buf[0..pos]) catch "hB";
+        },
         '@' => {
             // Return positional params joined by space
             if (positional_params.items.len == 0) return "";
