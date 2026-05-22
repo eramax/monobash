@@ -104,12 +104,13 @@ Skipped: 0
 🎉  ALL 537 TESTS PASSED!
 ```
 
-### Bash comparison suite (tests/compare.sh — 302 tests across 20 categories)
+### Bash comparison suite (tests/compare.sh — 241 tests across 17 categories)
 ```
-Total  : 302
-Passed : 183
-Failed : 119  (gaps vs bash)
-Coverage: 61%
+Total  : 241
+Passed : 167
+Failed : 74  (gaps vs bash)
+Coverage: 69%
+Note: 3+ categories hang due to multi-line test parsing issues
 ```
 See Gap Analysis section below for detailed breakdown by category.
 
@@ -142,55 +143,64 @@ The comparison suite (`tests/compare.sh`) runs 302 tests across 20 categories ag
 | 18-environment-vars | 4 | 8 | 12 | 33% |
 | 19-edge-cases | 10 | 2 | 12 | 83% |
 
-### Recent Fixes (this session)
+### Recent Fixes
 
 1. **`$?` exit status tracking** — added `recordExitStatus()` wrapper around `execNode` so `$?` is updated after every command
 2. **`set -- a b c`** — `builtinSet` now handles `--` separator and sets positional parameters
-3. **Variable assignments in simple commands** — `execSimpleCommand` now processes `variable_assignment` children before expanding command words (fixes standalone `x=2` before other commands)
+3. **Variable assignments in simple commands** — `execSimpleCommand` processes `variable_assignment` children first (fixes standalone `x=2`)
 4. **echo -n flag** — suppresses trailing newline
-5. **printf argument cycling** — format string reuses cyclically for all remaining arguments (like `printf '%s\n' a b c`)
-6. **AND/OR short-circuit** — `execList` checks for `&&`/`||` operators and short-circuits based on exit status
+5. **printf argument cycling** — format string reuses cyclically for all remaining arguments
+6. **AND/OR short-circuit** — `execList` checks for `&&`/`||` operators and short-circuits
 7. **`$-` expansion** — added to `expandPositional`'s special var handling
-8. **Expansion error propagation** — `UndefinedVar` errors from `${var:?}` now return exit code 127
-9. **Readonly enforcement** — `set()` and `setLocal()` check `isReadonly()` before overwriting
-10. **unset C environment cleanup** — `unset()` now calls `unsetenv()` to sync the C environment
-11. **return value parsing** — `return N` now sets `$?` to N
-12. **Background operator** — `&` background execution in `execProgram`/`execCompound` with job tracking
+8. **Expansion error propagation** — `UndefinedVar` errors from `${var:?}` return exit code 127
+9. **Readonly enforcement** — `set()`/`setLocal()` check `isReadonly()` before overwriting
+10. **unset C environment cleanup** — `unset()` calls `unsetenv()` to sync C env
+11. **return value parsing** — `return N` sets `$?` to N
+12. **Background operator** — `&` background execution with job tracking
+13. **`$x` expansion in `[...]` tests** — `test_command` nodes now expand variables via `expandToken` (was using raw `nodeText`)
+14. **Arithmetic preprocessor** — `$(( ))` expressions with variables preprocessed before `wordexp` using a recursive-descent integer evaluator
+15. **`evalArithmetic` refactored** — calls `evalArithmeticFromStr` directly instead of wrapping in `$((` and calling `wordexp`
+16. **Backslash-newline continuation** — merged adjacent word tokens when separated by `\<newline>`
+17. **ANSIC-C quoting** — `$'...'` escape processing in mixed tokens
+18. **`$-` dynamic** — reflects actual shell state (errexit, nounset, etc.)
+19. **cd error message** — matches bash format
+20. **alias/unalias** — proper error messages on failure
+21. **kill -l** — signal name listing
+22. **dirs/pushd/popd** — actually change directory
+23. **shopt** — basic `-s`/`-u`/list support
+24. **`;;` syntax error** — properly detected
+25. **Shell environment variables** — BASH_VERSION, SECONDS, RANDOM, UID, EUID, HOSTNAME, SHLVL, LINENO, PPID, EPOCHSECONDS
+26. **PATH inheritance** — inherits from parent environment instead of hardcoded
+27. **! pipeline negation** — fixed child selection (was picking `!` token as the command)
+28. **Exit code 127** — `execCommand` propagates failure status
+29. **2>&1 redirect** — rewritten `parseFileRedirect` with flexible FD parsing
+30. **Herestrings** — appends newline after content
+31. **Arithmetic `(( i = 5 ))`** — parses assignments from expression, evaluates RHS, stores in variable
+32. **let builtin** — full rewrite handling `+=`, `++`, `--`, pre/post increment
+33. **declare -i** — evaluates arithmetic expressions before storing
 
 ### Priority Areas (sorted by gap impact)
 
-#### Remaining bugs (should work, don't)
-1. **`$x` expansion in `[ "$x" -eq 2 ]`** — variable set via `setenv` not resolved by `wordexp` in `[` context; `echo $x` works fine
-2. **if/elif/else with variables** — `elif` conditions using expanded variables fail (same root cause as above)
-3. **for/while/until loop variables** — loop iteration and body execution with variable assignment broken
-4. **Backslash-newline continuation** — `echo foo\<newline>bar` produces "foo bar" instead of "foobar"
-5. **Single quotes with newlines** — `$'a\nb'` prints with literal `'` quotes
-6. **Case pattern matching** — glob patterns (`*`, `?`, `[abc]`) not matching in case statements
-7. **select loop** — non-interactive handling needs improvement (prints menu when it shouldn't)
-8. **cd error message** — format doesn't match bash
-9. **alias/unalias** — stderr output format mismatches
-10. **heredoc/herestring** — `<<<` produces wrong output; `2>&1` redirect issues
-11. **! pipeline negation** — exit code for negated true is wrong
-12. **Multiple semicolons** — `;;` syntax error not detected
+#### Remaining bugs
+1. **Check for loops with brace expansion** — depends on brace expansion feature
+2. **select loop** — non-interactive handling needs improvement
+3. **heredoc/herestring corruption** — some edge cases cause massive output concatenation
+4. **05-redirection tests** — only runs 3/10 due to hanging tests
+5. **08-builtins** — some builtins still failing (hash, getopts)
 
-#### Missing feature categories
-13. **Arrays** — full indexed array support (a=(1 2 3), ${a[@]}, ${#a[@]}, a+=(4))
-14. **Brace expansion** — {a,b,c}, {1..5}, {a..e} completely absent
-15. **Parameter expansion operators** — ${var:offset}, ${var/pat/repl}, ${!indirect}, ${!prefix*}
-16. **Arithmetic command with vars** — (( i = 5 )), (( i += 1 )), (( 5 > 3 )) don't affect variables
-17. **let builtin** — doesn't evaluate expressions
-18. **declare -i** — integer attribute doesn't affect arithmetic
-19. **Associative arrays** — declare -A, key-value storage
-20. **exit status 127** — command-not-found not returning 127
-21. **Shell variables** — BASH_VERSION, SECONDS, RANDOM, UID, EUID, HOSTNAME, SHLVL, LINENO not set
+#### Missing feature categories (larger effort)
+6. **Arrays** — full indexed array support (`a=(1 2 3)`, `${a[@]}`, `${#a[@]}`, `a+=(4)`)
+7. **Brace expansion** — `{a,b,c}`, `{1..5}`, `{a..e}` completely absent
+8. **Parameter expansion operators** — `${var:offset}`, `${var/pat/repl}`, `${!indirect}`, `${!prefix*}`
+9. **Associative arrays** — `declare -A`, key-value storage
+10. **Case pattern matching** — glob patterns (`*`, `?`, `[abc]`) not matching in case statements
 
 #### Environment/stub improvements
-22. **PATH inheritance** — hardcoded to `/usr/local/bin:/usr/bin:/bin` instead of inheriting
-23. **$- flags** — hardcoded to "hB" instead of reflecting actual shell state
-24. **kill -l** — not implemented
-25. **dirs/pushd/popd** — output format doesn't match bash
-26. **shopt, getopts, fc, complete, compgen** — all stubs
-27. **Process substitution** — <(...) >(...) not supported
+11. **$- flags** — `hBc` should be more comprehensive
+12. **kill -l on specific signals** — `kill -l SIGTERM` not implemented
+13. **shopt** — more options needed
+14. **hash, getopts, fc, complete, compgen** — stubs
+15. **Process substitution** — `<(...)` `>(...)` not supported
 
 ### Comparison Test Infrastructure
 

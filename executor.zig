@@ -366,6 +366,7 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
             if (err == error.UndefinedVar) {
                 return 127;
             }
+            i += 1;
             continue;
         }
         i += 1;
@@ -628,23 +629,9 @@ fn execFor(io: std.Io, node: NodeType, source: []const u8) u8 {
     return last_status;
 }
 
-fn evalArithmetic(alloc: std.mem.Allocator, expr_text: []const u8) ?u64 {
+fn evalArithmetic(alloc: std.mem.Allocator, expr_text: []const u8) ?i64 {
     if (expr_text.len == 0) return null;
-    var full_buf: [4096]u8 = undefined;
-    if (expr_text.len + 7 > full_buf.len) return null;
-    full_buf[0] = '$';
-    full_buf[1] = '(';
-    full_buf[2] = '(';
-    @memcpy(full_buf[3..][0..expr_text.len], expr_text);
-    full_buf[3 + expr_text.len] = ')';
-    full_buf[4 + expr_text.len] = ')';
-    const full = full_buf[0 .. 5 + expr_text.len];
-    var result = expand.expandToken(alloc, full) catch return null;
-    defer result.deinit();
-    if (result.words.len > 0) {
-        return std.fmt.parseInt(u64, result.words[0], 10) catch null;
-    }
-    return null;
+    return expand.evalArithmeticFromStr(alloc, expr_text) catch null;
 }
 
 fn execCStyleFor(io: std.Io, node: NodeType, source: []const u8) u8 {
@@ -1277,14 +1264,19 @@ fn evalExpr(node: NodeType, source: []const u8) u8 {
     const name = nodeName(node);
 
     if (std.mem.eql(u8, name, "word") or std.mem.eql(u8, name, "string") or
-        std.mem.eql(u8, name, "raw_string") or std.mem.eql(u8, name, "number")) {
-        const txt = nodeText(node, source);
-        return if (txt.len > 0) 0 else 1;
-    }
-
-    if (std.mem.eql(u8, name, "simple_expansion") or std.mem.eql(u8, name, "expansion")) {
-        const txt = nodeText(node, source);
-        return if (txt.len > 0) 0 else 1;
+        std.mem.eql(u8, name, "raw_string") or std.mem.eql(u8, name, "number") or
+        std.mem.eql(u8, name, "simple_expansion") or std.mem.eql(u8, name, "expansion"))
+    {
+        const raw = nodeText(node, source);
+        // Expand the token so variables like $x or "$x" are resolved
+        if (expand.expandToken(allocator, raw)) |res| {
+            var list = res;
+            defer list.deinit();
+            if (list.words.len > 0 and list.words[0].len > 0) return 0;
+            return 1;
+        } else |_| {
+            return if (raw.len > 0) 0 else 1;
+        }
     }
 
     if (std.mem.eql(u8, name, "concatenation")) {
@@ -1322,7 +1314,7 @@ fn evalExpr(node: NodeType, source: []const u8) u8 {
 
         // File tests (-d, -f, -r, -w, -x, -e, -s, -L, -n, -z)
         if (operand) |o| {
-            const val = nodeText(o, source);
+            const val = expandedNodeText(o, source);
             return testUnaryOp(op_text, val);
         }
         return 1;
@@ -1377,8 +1369,8 @@ fn evalExpr(node: NodeType, source: []const u8) u8 {
             return evalExpr(rnode, source);
         }
 
-        const lval = nodeText(lnode, source);
-        const rval = nodeText(rnode, source);
+        const lval = expandedNodeText(lnode, source);
+        const rval = expandedNodeText(rnode, source);
 
         if (std.mem.eql(u8, op, "==") or std.mem.eql(u8, op, "=")) {
             return if (std.mem.eql(u8, lval, rval)) 0 else 1;
@@ -1426,6 +1418,20 @@ fn evalExpr(node: NodeType, source: []const u8) u8 {
     }
 
     return 1;
+}
+
+fn expandedNodeText(node: NodeType, source: []const u8) []const u8 {
+    const raw = nodeText(node, source);
+    if (expand.expandToken(allocator, raw)) |res| {
+        var list = res;
+        defer list.deinit();
+        if (list.words.len > 0) {
+            return allocator.dupe(u8, list.words[0]) catch raw;
+        }
+        return "";
+    } else |_| {
+        return raw;
+    }
 }
 
 fn testUnaryOp(op: []const u8, val: []const u8) u8 {

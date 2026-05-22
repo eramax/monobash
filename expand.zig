@@ -68,7 +68,10 @@ pub fn expandToken(allocator: std.mem.Allocator, raw: []const u8) WordExpError!W
     }
 
     // For mixed or non-ANSI-C tokens, handle variable expansion and wordpexp
-    const with_ansi = try expandAnsiC(allocator, cleaned);
+    const with_arith = try preprocessArithmetic(allocator, cleaned);
+    defer allocator.free(with_arith);
+
+    const with_ansi = try expandAnsiC(allocator, with_arith);
     defer allocator.free(with_ansi);
 
     // Check if result still contains ANSI-C artifacts that wordpexp would reject
@@ -300,6 +303,406 @@ pub fn expandTokenSafe(allocator: std.mem.Allocator, raw: []const u8) WordExpErr
     const raw_z = try allocator.dupeZ(u8, cleaned);
     defer allocator.free(raw_z);
     return expandRaw(allocator, raw_z, c.WRDE_UNDEF);
+}
+
+pub fn evalArithmeticFromStr(_: std.mem.Allocator, expr: []const u8) !i64 {
+    var p = ArithParser{ .expr = expr, .pos = 0 };
+    p.skipWhitespace();
+    return p.parseExpr();
+}
+
+const ArithError = error{Syntax, DivisionByZero};
+
+const ArithParser = struct {
+    expr: []const u8,
+    pos: usize,
+
+    fn peek(self: ArithParser) ?u8 {
+        if (self.pos >= self.expr.len) return null;
+        return self.expr[self.pos];
+    }
+
+    fn next(self: *ArithParser) ?u8 {
+        if (self.pos >= self.expr.len) return null;
+        const ch = self.expr[self.pos];
+        self.pos += 1;
+        return ch;
+    }
+
+    fn skipWhitespace(self: *ArithParser) void {
+        while (self.pos < self.expr.len and std.ascii.isWhitespace(self.expr[self.pos])) {
+            self.pos += 1;
+        }
+    }
+
+    fn parseExpr(self: *ArithParser) ArithError!i64 {
+        const left = try self.parseLogicalOr();
+
+        self.skipWhitespace();
+        if (self.peek() == '?') {
+            _ = self.next();
+            self.skipWhitespace();
+            const true_val = try self.parseExpr();
+            self.skipWhitespace();
+            if (self.peek() != ':') return error.Syntax;
+            _ = self.next();
+            self.skipWhitespace();
+            const false_val = try self.parseExpr();
+            return if (left != 0) true_val else false_val;
+        }
+
+        return left;
+    }
+
+    fn parseLogicalOr(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseLogicalAnd();
+        while (true) {
+            self.skipWhitespace();
+            if (self.pos + 1 < self.expr.len and self.expr[self.pos] == '|' and self.expr[self.pos + 1] == '|') {
+                self.pos += 2;
+                const right = try self.parseLogicalAnd();
+                left = if (left != 0 or right != 0) 1 else 0;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseLogicalAnd(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseBitwiseOr();
+        while (true) {
+            self.skipWhitespace();
+            if (self.pos + 1 < self.expr.len and self.expr[self.pos] == '&' and self.expr[self.pos + 1] == '&') {
+                self.pos += 2;
+                const right = try self.parseBitwiseOr();
+                left = if (left != 0 and right != 0) 1 else 0;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseBitwiseOr(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseBitwiseXor();
+        while (true) {
+            self.skipWhitespace();
+            if (self.peek() == '|') {
+                if (self.pos + 1 < self.expr.len and self.expr[self.pos + 1] == '|') break;
+                _ = self.next();
+                const right = try self.parseBitwiseXor();
+                left = left | right;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseBitwiseXor(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseBitwiseAnd();
+        while (true) {
+            self.skipWhitespace();
+            if (self.peek() == '^') {
+                _ = self.next();
+                const right = try self.parseBitwiseAnd();
+                left = left ^ right;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseBitwiseAnd(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseEquality();
+        while (true) {
+            self.skipWhitespace();
+            if (self.peek() == '&') {
+                if (self.pos + 1 < self.expr.len and self.expr[self.pos + 1] == '&') break;
+                _ = self.next();
+                const right = try self.parseEquality();
+                left = left & right;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseEquality(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseComparison();
+        while (true) {
+            self.skipWhitespace();
+            if (self.pos + 1 < self.expr.len) {
+                if (self.expr[self.pos] == '=' and self.expr[self.pos + 1] == '=') {
+                    self.pos += 2;
+                    const right = try self.parseComparison();
+                    left = if (left == right) 1 else 0;
+                } else if (self.expr[self.pos] == '!' and self.expr[self.pos + 1] == '=') {
+                    self.pos += 2;
+                    const right = try self.parseComparison();
+                    left = if (left != right) 1 else 0;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseComparison(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseShift();
+        while (true) {
+            self.skipWhitespace();
+            if (self.pos + 1 < self.expr.len) {
+                if (self.expr[self.pos] == '<' and self.expr[self.pos + 1] == '=') {
+                    self.pos += 2;
+                    const right = try self.parseShift();
+                    left = if (left <= right) 1 else 0;
+                } else if (self.expr[self.pos] == '>' and self.expr[self.pos + 1] == '=') {
+                    self.pos += 2;
+                    const right = try self.parseShift();
+                    left = if (left >= right) 1 else 0;
+                } else if (self.expr[self.pos] == '<' and (self.pos + 1 >= self.expr.len or self.expr[self.pos + 1] != '<')) {
+                    _ = self.next();
+                    const right = try self.parseShift();
+                    left = if (left < right) 1 else 0;
+                } else if (self.expr[self.pos] == '>' and (self.pos + 1 >= self.expr.len or self.expr[self.pos + 1] != '>')) {
+                    _ = self.next();
+                    const right = try self.parseShift();
+                    left = if (left > right) 1 else 0;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseShift(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseAdditive();
+        while (true) {
+            self.skipWhitespace();
+            if (self.pos + 1 < self.expr.len) {
+                if (self.expr[self.pos] == '<' and self.expr[self.pos + 1] == '<') {
+                    self.pos += 2;
+                    const right = try self.parseAdditive();
+                    left = left << @as(u6, @intCast(right));
+                } else if (self.expr[self.pos] == '>' and self.expr[self.pos + 1] == '>') {
+                    self.pos += 2;
+                    const right = try self.parseAdditive();
+                    left = left >> @as(u6, @intCast(right));
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseAdditive(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseMultiplicative();
+        while (true) {
+            self.skipWhitespace();
+            if (self.peek() == '+') {
+                _ = self.next();
+                const right = try self.parseMultiplicative();
+                left = left + right;
+            } else if (self.peek() == '-') {
+                _ = self.next();
+                const right = try self.parseMultiplicative();
+                left = left - right;
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseMultiplicative(self: *ArithParser) ArithError!i64 {
+        var left = try self.parseUnary();
+        while (true) {
+            self.skipWhitespace();
+            if (self.peek() == '*') {
+                _ = self.next();
+                const right = try self.parseUnary();
+                left = left * right;
+            } else if (self.peek() == '/') {
+                _ = self.next();
+                const right = try self.parseUnary();
+                if (right == 0) return error.DivisionByZero;
+                left = @divTrunc(left, right);
+            } else if (self.peek() == '%') {
+                _ = self.next();
+                const right = try self.parseUnary();
+                if (right == 0) return error.DivisionByZero;
+                left = @rem(left, right);
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    fn parseUnary(self: *ArithParser) ArithError!i64 {
+        self.skipWhitespace();
+        if (self.peek()) |ch| {
+            switch (ch) {
+                '+' => {
+                    _ = self.next();
+                    return self.parseUnary();
+                },
+                '-' => {
+                    _ = self.next();
+                    return -try self.parseUnary();
+                },
+                '~' => {
+                    _ = self.next();
+                    return ~try self.parseUnary();
+                },
+                '!' => {
+                    _ = self.next();
+                    const val = try self.parseUnary();
+                    return if (val == 0) 1 else 0;
+                },
+                else => return self.parsePrimary(),
+            }
+        }
+        return error.Syntax;
+    }
+
+    fn parsePrimary(self: *ArithParser) ArithError!i64 {
+        self.skipWhitespace();
+
+        if (self.peek()) |ch| {
+            if (ch == '(') {
+                _ = self.next();
+                const val = try self.parseExpr();
+                self.skipWhitespace();
+                if (self.peek() != ')') return error.Syntax;
+                _ = self.next();
+                return val;
+            }
+
+            if (ch >= '0' and ch <= '9') {
+                const start = self.pos;
+                while (self.pos < self.expr.len and self.expr[self.pos] >= '0' and self.expr[self.pos] <= '9') {
+                    self.pos += 1;
+                }
+                return std.fmt.parseInt(i64, self.expr[start..self.pos], 10) catch return error.Syntax;
+            }
+
+            if (ch == '$') {
+                _ = self.next();
+                return self.parseVariableRef();
+            }
+
+            if (std.ascii.isAlphabetic(ch) or ch == '_') {
+                const start = self.pos;
+                while (self.pos < self.expr.len) {
+                    const cur = self.expr[self.pos];
+                    if (std.ascii.isAlphanumeric(cur) or cur == '_') {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                const name = self.expr[start..self.pos];
+                return self.getVarValue(name);
+            }
+        }
+
+        return error.Syntax;
+    }
+
+    fn parseVariableRef(self: *ArithParser) ArithError!i64 {
+        if (self.peek()) |ch| {
+            if (ch == '{') {
+                _ = self.next();
+                const start = self.pos;
+                while (self.pos < self.expr.len) {
+                    if (self.expr[self.pos] == '}') {
+                        const name = self.expr[start..self.pos];
+                        _ = self.next();
+                        return self.getVarValue(name);
+                    }
+                    self.pos += 1;
+                }
+                return error.Syntax;
+            }
+            if (std.ascii.isAlphabetic(ch) or ch == '_') {
+                const start = self.pos;
+                while (self.pos < self.expr.len) {
+                    const cur = self.expr[self.pos];
+                    if (std.ascii.isAlphanumeric(cur) or cur == '_') {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                const name = self.expr[start..self.pos];
+                return self.getVarValue(name);
+            }
+        }
+        return error.Syntax;
+    }
+
+    fn getVarValue(self: *ArithParser, name: []const u8) i64 {
+        _ = self;
+        if (var_store.get(name)) |v| {
+            return std.fmt.parseInt(i64, v.value, 10) catch 0;
+        }
+        return 0;
+    }
+};
+
+fn preprocessArithmetic(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var result = std.ArrayListAligned(u8, null).empty;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '$' and i + 2 < raw.len and raw[i + 1] == '(' and raw[i + 2] == '(') {
+            var depth: usize = 2;
+            const start = i + 3;
+            var j = start;
+            while (j < raw.len) {
+                if (raw[j] == '(') {
+                    depth += 1;
+                } else if (raw[j] == ')') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        const expr = raw[start..j - 1];
+                        const val = evalArithmeticFromStr(allocator, expr) catch {
+                            try result.appendSlice(allocator, raw[i..]);
+                            i = raw.len;
+                            break;
+                        };
+                        var buf: [32]u8 = undefined;
+                        const val_str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "0";
+                        try result.appendSlice(allocator, val_str);
+                        i = j + 1;
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if (j >= raw.len and depth > 0) {
+                try result.appendSlice(allocator, raw[i..]);
+                break;
+            }
+        } else {
+            try result.append(allocator, raw[i]);
+            i += 1;
+        }
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 fn stripLineContinuation(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
