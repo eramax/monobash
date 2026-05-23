@@ -107,11 +107,13 @@ pub fn main(args: [][]const u8) u8 {
     sendCmd(sock, "STOR "); sendCmd(sock, remote_file); sendCmd(sock, "\r\n");
     _ = recvResp(sock, &buf);
 
-    var send_buf: [8192]u8 = undefined;
-    while (true) {
-        const n = core.c.read(in_fd, &send_buf, send_buf.len);
-        if (n <= 0) break;
-        _ = core.c.send(data_sock, &send_buf, @as(usize, @intCast(n)), 0);
+    const file_data = core.readAll(alloc, in_fd, 32 * 1024 * 1024) catch return 1;
+    defer alloc.free(file_data);
+    var pos: usize = 0;
+    while (pos < file_data.len) {
+        const n = @min(8192, file_data.len - pos);
+        _ = core.c.send(data_sock, file_data.ptr + pos, n, 0);
+        pos += n;
     }
 
     _ = core.c.close(in_fd);

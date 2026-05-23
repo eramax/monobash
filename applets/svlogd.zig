@@ -111,14 +111,14 @@ pub fn main(args: [][]const u8) u8 {
                     tm.tm_sec,
                     trimmed,
                 }) catch continue;
-                _ = core.c.write(fd, s.ptr, s.len);
+                core.writeAll(fd, s);
             } else {
-                _ = core.c.write(fd, trimmed.ptr, trimmed.len);
-                _ = core.c.write(fd, "\n", 1);
+                core.writeAll(fd, trimmed);
+                core.writeAll(fd, "\n");
             }
         } else {
-            _ = core.c.write(fd, trimmed.ptr, trimmed.len);
-            _ = core.c.write(fd, "\n", 1);
+            core.writeAll(fd, trimmed);
+            core.writeAll(fd, "\n");
         }
     }
 

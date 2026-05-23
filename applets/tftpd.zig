@@ -82,16 +82,20 @@ pub fn main(args: [][]const u8) u8 {
             const tftp_sock = core.c.socket(core.c.AF_INET, core.c.SOCK_DGRAM, 0);
             if (tftp_sock < 0) continue;
 
-            while (true) {
-                const rd = core.c.read(fd, &data[4], 512);
-                if (rd < 0) break;
+            const file_data = core.readAll(alloc, fd, 32 * 1024 * 1024) catch break;
+            defer alloc.free(file_data);
+            var fpos: usize = 0;
+            while (fpos < file_data.len) {
+                const chunk = @min(512, file_data.len - fpos);
+                @memcpy(data[4..4+chunk], file_data[fpos..fpos+chunk]);
                 const bh: *u16 = @ptrCast(@alignCast(&data[2]));
                 bh.* = core.c.htons(block);
-                const total = 4 + @as(usize, @intCast(rd));
+                const total = 4 + chunk;
                 _ = core.c.sendto(tftp_sock, &data, total, 0,
                     .{ .__sockaddr_in__ = @ptrCast(&from) }, fromlen);
 
-                if (rd < 512) break;
+                fpos += chunk;
+                if (fpos >= file_data.len) break;
 
                 var ack: [1024]u8 = undefined;
                 var ack_from: core.c.struct_sockaddr_in = undefined;
@@ -106,4 +110,5 @@ pub fn main(args: [][]const u8) u8 {
             }
         }
     }
+    return 0;
 }

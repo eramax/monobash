@@ -115,11 +115,13 @@ pub fn main(args: [][]const u8) u8 {
                     const stat_path_z = alloc.dupeZ(u8, stat_path) catch continue;
                     const stat_fd = core.c.open(stat_path_z.ptr, core.c.O_RDONLY);
                     if (stat_fd < 0) { match = false; } else {
-                        var data: [128]u8 = undefined;
-                        const r = core.c.read(stat_fd, &data, data.len);
+                        const content = core.readAll(alloc, stat_fd, 128) catch blk: {
+                            _ = core.c.close(stat_fd);
+                            match = false;
+                            break :blk &.{};
+                        };
                         _ = core.c.close(stat_fd);
-                        if (r > 0) {
-                            const content = data[0..@as(usize, @intCast(r))];
+                        if (content.len > 0) {
                             if (std.mem.indexOfScalar(u8, content, '(')) |start| {
                                 if (std.mem.lastIndexOfScalar(u8, content, ')')) |end| {
                                     const comm = content[start + 1 .. end];
@@ -244,7 +246,7 @@ pub fn main(args: [][]const u8) u8 {
                 const pf_z = alloc.dupeZ(u8, pf) catch return 1;
                 const fd = core.c.open(pf_z.ptr, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, @as(c_uint, 0o644));
                 if (fd >= 0) {
-                    _ = core.c.write(fd, pid_str.ptr, pid_str.len);
+                    core.writeAll(fd, pid_str);
                     _ = core.c.close(fd);
                 }
             }

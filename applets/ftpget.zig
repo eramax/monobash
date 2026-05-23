@@ -113,7 +113,7 @@ pub fn main(args: [][]const u8) u8 {
     while (true) {
         const n = core.c.recv(data_sock, &recv_buf, recv_buf.len, 0);
         if (n <= 0) break;
-        _ = core.c.write(out_fd, &recv_buf, @as(usize, @intCast(n)));
+        core.writeAll(out_fd, recv_buf[0..@as(usize, @intCast(n))]);
     }
 
     if (out_fd != 1) _ = core.c.close(out_fd);
