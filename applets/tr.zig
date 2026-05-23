@@ -3,6 +3,29 @@ const core = @import("core.zig");
 
 pub const meta = core.AppletMeta{ .name = "tr", .main = main };
 
+fn expandSet(set: []const u8, buf: []u8) usize {
+    var pos: usize = 0;
+    var j: usize = 0;
+    while (j < set.len and pos < buf.len) {
+        if (j + 2 < set.len and set[j + 1] == '-') {
+            const from = set[j];
+            const to = set[j + 2];
+            var c = from;
+            while (c <= to and pos < buf.len) {
+                buf[pos] = c;
+                pos += 1;
+                c += 1;
+            }
+            j += 3;
+        } else {
+            buf[pos] = set[j];
+            pos += 1;
+            j += 1;
+        }
+    }
+    return pos;
+}
+
 pub fn main(args: [][]const u8) u8 {
     var do_delete = false;
     var do_squeeze = false;
@@ -14,15 +37,22 @@ pub fn main(args: [][]const u8) u8 {
             switch (flag) {
                 'd' => do_delete = true,
                 's' => do_squeeze = true,
-                else => return core.die(1, "tr: unknown flag '{c}'\n", .{flag}),
+                else => return core.die(1, "tr: unknown flag '-{c}'\n", .{flag}),
             }
         }
         i += 1;
     }
 
-    const set1 = if (i < args.len) args[i] else return core.die(1, "tr: missing SET1\n", .{});
+    const set1_raw = if (i < args.len) args[i] else return core.die(1, "tr: missing SET1\n", .{});
     i += 1;
-    const set2 = if (i < args.len) args[i] else "";
+    const set2_raw = if (i < args.len) args[i] else "";
+
+    var set1_buf: [256]u8 = undefined;
+    var set2_buf: [256]u8 = undefined;
+    const set1_len = expandSet(set1_raw, &set1_buf);
+    const set2_len = expandSet(set2_raw, &set2_buf);
+    const set1 = set1_buf[0..set1_len];
+    const set2 = set2_buf[0..set2_len];
 
     const alloc = std.heap.page_allocator;
     const data = core.readAll(alloc, 0, 1024 * 1024) catch return 1;
@@ -34,21 +64,21 @@ pub fn main(args: [][]const u8) u8 {
 
     for (data) |ch| {
         if (do_delete) {
-            if (charInSet(ch, set1)) continue;
+            if (std.mem.indexOfScalar(u8, set1, ch) != null) continue;
         }
 
         if (do_squeeze) {
-            if (charInSet(ch, set1) and ch == prev_char) continue;
+            if (std.mem.indexOfScalar(u8, set1, ch) != null and ch == prev_char) continue;
         }
 
         var out = ch;
-
         if (!do_delete and set2.len > 0) {
-            const idx = charIndex(ch, set1);
-            if (idx < set2.len) {
-                out = set2[idx];
-            } else if (idx != std.math.maxInt(usize) and set2.len > 0) {
-                out = set2[set2.len - 1];
+            if (std.mem.indexOfScalar(u8, set1, ch)) |idx| {
+                if (idx < set2.len) {
+                    out = set2[idx];
+                } else {
+                    out = set2[set2.len - 1];
+                }
             }
         }
 
@@ -59,37 +89,4 @@ pub fn main(args: [][]const u8) u8 {
 
     core.writeAll(1, buf[0..pos]);
     return 0;
-}
-
-fn charInSet(ch: u8, set: []const u8) bool {
-    var j: usize = 0;
-    while (j < set.len) {
-        if (j + 2 < set.len and set[j + 1] == '-') {
-            if (ch >= set[j] and ch <= set[j + 2]) return true;
-            j += 3;
-        } else {
-            if (set[j] == ch) return true;
-            j += 1;
-        }
-    }
-    return false;
-}
-
-fn charIndex(ch: u8, set: []const u8) usize {
-    var j: usize = 0;
-    var idx: usize = 0;
-    while (j < set.len) {
-        if (j + 2 < set.len and set[j + 1] == '-') {
-            if (ch >= set[j] and ch <= set[j + 2]) {
-                return idx + (ch - set[j]);
-            }
-            idx += (set[j + 2] - set[j]) + 1;
-            j += 3;
-        } else {
-            if (set[j] == ch) return idx;
-            idx += 1;
-            j += 1;
-        }
-    }
-    return std.math.maxInt(usize);
 }

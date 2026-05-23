@@ -1,0 +1,12 @@
+FROM docker.io/ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash coreutils && rm -rf /var/lib/apt/lists/*
+
+# Copy prebuilt monobash binary and tests
+COPY zig-out/bin/monobash /usr/local/bin/monobash
+COPY tests /tests
+COPY SESSION.md /SESSION.md
+
+ENTRYPOINT ["/usr/local/bin/monobash"]
+CMD ["-c", "echo monobash ready"]
