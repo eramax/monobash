@@ -5,16 +5,31 @@ pub const meta = core.AppletMeta{ .name = "pidof", .main = main };
 const alloc = std.heap.page_allocator;
 
 pub fn main(args: [][]const u8) u8 {
-    if (args.len < 2) return core.die(1, "usage: pidof [-s] [-x] PROGRAM\n", .{});
+    if (args.len < 2) return core.die(1, "usage: pidof [-s] [-x] [-o PID] PROGRAM\n", .{});
 
     var i: usize = 1;
     var opt_single = false;
     var opt_shells = false;
+    var omit_list = std.ArrayListAligned(usize, null).empty;
+    defer omit_list.deinit(alloc);
 
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
         if (args[i].len == 1) {
             i += 1;
             break;
+        }
+        if (std.mem.eql(u8, args[i], "-o")) {
+            i += 1;
+            if (i >= args.len) return core.die(1, "pidof: option requires an argument -- o\n", .{});
+            const val = args[i];
+            if (std.mem.eql(u8, val, "%PPID")) {
+                omit_list.append(alloc, @intCast(core.c.getppid())) catch {};
+            } else {
+                const pid = std.fmt.parseInt(usize, val, 10) catch return core.die(1, "pidof: invalid PID '{s}'\n", .{val});
+                omit_list.append(alloc, pid) catch {};
+            }
+            i += 1;
+            continue;
         }
         for (args[i][1..]) |c| {
             switch (c) {
@@ -41,7 +56,13 @@ pub fn main(args: [][]const u8) u8 {
         const name = std.mem.sliceTo(@as([*c]u8, @ptrCast(&dirent.d_name)), 0);
         const pid = std.fmt.parseUnsigned(usize, name, 10) catch continue;
 
-        var comm_buf: [256]u8 = undefined;
+        // Check if PID should be omitted
+        var omitted = false;
+        for (omit_list.items) |op| {
+            if (pid == op) { omitted = true; break; }
+        }
+        if (omitted) continue;
+
         var path_buf: [128]u8 = undefined;
         const comm_path = std.fmt.bufPrint(&path_buf, "/proc/{d}/comm", .{pid}) catch continue;
         var z_buf: [256:0]u8 = undefined;

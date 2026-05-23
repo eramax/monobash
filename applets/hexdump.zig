@@ -46,12 +46,17 @@ pub fn main(args: [][]const u8) u8 {
             core.writeAll(1, off);
             var j: usize = 0;
             while (j < 16) {
-                const h = if (j < chunk.len) std.fmt.bufPrint(&lbuf, "{x:0>2}", .{chunk[j]}) catch "  " else "  ";
-                core.writeAll(1, h);
-                if (j == 7) core.writeAll(1, "  ");
+                if (j < chunk.len) {
+                    const h = std.fmt.bufPrint(&lbuf, "{x:0>2}", .{chunk[j]}) catch "";
+                    core.writeAll(1, h);
+                    core.writeAll(1, " ");
+                } else {
+                    core.writeAll(1, "   ");
+                }
+                if (j == 7) core.writeAll(1, " ");
                 j += 1;
             }
-            core.writeAll(1, "  |");
+            core.writeAll(1, " |");
             for (chunk) |b| {
                 const c: u8 = if (b >= 32 and b < 127) b else '.';
                 lbuf[0] = c;
@@ -76,6 +81,11 @@ pub fn main(args: [][]const u8) u8 {
             core.writeAll(1, "\n");
         }
         offset += 16;
+    }
+    // Final address line (only for canonical)
+    if (canonical and data.len > 0) {
+        const final_addr = std.fmt.bufPrint(&lbuf, "{x:0>8}\n", .{data.len}) catch "";
+        core.writeAll(1, final_addr);
     }
     return 0;
 }

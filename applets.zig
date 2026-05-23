@@ -219,6 +219,7 @@ const applets = struct {
     const _udpsvd = @import("applets/udpsvd.zig");
     const _zcip = @import("applets/zcip.zig");
     // --- Batch 6: Process/Signal ---
+    const _pidof = @import("applets/pidof.zig");
     const _killall = @import("applets/killall.zig");
     const _killall5 = @import("applets/killall5.zig");
     const _pkill = @import("applets/pkill.zig");
@@ -496,6 +497,7 @@ const all_metas = &[_]core.AppletMeta{
     applets._udpsvd.meta,
     applets._zcip.meta,
     // --- Batch 6: Process/Signal ---
+    applets._pidof.meta,
     applets._killall.meta,
     applets._killall5.meta,
     applets._pkill.meta,

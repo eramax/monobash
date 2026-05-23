@@ -52,10 +52,14 @@ fn printMonth(m: usize, y: usize) void {
     while (d <= days) {
         const s = std.fmt.bufPrint(&buf, "{d:>2}", .{d}) catch "";
         core.writeAll(1, s);
+        if ((start + d) % 7 == 0) {
+            core.writeAll(1, "\n");
+        } else if (d < days) {
+            core.writeAll(1, " ");
+        }
         d += 1;
-        if ((start + d - 1) % 7 == 0) core.writeAll(1, "\n") else core.writeAll(1, " ");
     }
-    if ((start + days - 1) % 7 != 0) core.writeAll(1, "\n");
+    if ((start + days) % 7 != 0) core.writeAll(1, "\n");
 }
 fn printYear(y: usize) void {
     var buf: [128]u8 = undefined;
