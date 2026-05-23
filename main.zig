@@ -102,8 +102,20 @@ pub fn main(init: std.process.Init) !void {
         const prompt = if (last_status == 0) "monobash$ " else "monobash! ";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), init.io, prompt) catch break;
 
-        const line_or_null = if (have_terminal) readLineRaw(arena, &history) else readLineSimple(arena);
-        const line = line_or_null orelse break;
+        const line = blk: {
+            if (have_terminal) {
+                // Enter raw mode for interactive line editing
+                var raw: c.struct_termios = undefined;
+                _ = c.tcgetattr(c.STDIN_FILENO, &raw);
+                _ = c.cfmakeraw(&raw);
+                _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw);
+                const result = readLineRaw(arena, &history);
+                // Restore cooked mode immediately after reading
+                _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &orig_termios);
+                break :blk result;
+            }
+            break :blk readLineSimple(arena);
+        } orelse break;
         defer arena.free(line);
 
         if (line.len == 0) continue;
@@ -136,12 +148,6 @@ fn readLineSimple(arena: std.mem.Allocator) ?[]const u8 {
 }
 
 fn readLineRaw(arena: std.mem.Allocator, history: *history_mod.History) ?[]const u8 {
-    // Switch to raw mode
-    var raw: c.struct_termios = undefined;
-    _ = c.tcgetattr(c.STDIN_FILENO, &raw);
-    _ = c.cfmakeraw(&raw);
-    _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw);
-
     var buf: [4096]u8 = undefined;
     var len: usize = 0;
     var cursor: usize = 0;
@@ -270,12 +276,6 @@ fn readLineRaw(arena: std.mem.Allocator, history: *history_mod.History) ?[]const
 
         if (ch == 10 or ch == 13) break;
     }
-
-    // Restore cooked mode
-    var restore: c.struct_termios = undefined;
-    _ = c.tcgetattr(c.STDIN_FILENO, &restore);
-    _ = c.cfmakeraw(&restore);
-    // Actually restore from the saved termios - done by the 'defer' in main
 
     if (len == 0) return arena.dupe(u8, "") catch null;
     return arena.dupe(u8, buf[0..len]) catch null;
