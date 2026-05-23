@@ -557,6 +557,8 @@ pub fn run(io: std.Io, name: []const u8, argv: [][]const u8) u8 {
     };
 
     if (pid == 0) {
+        // Child process: disable io_uring to avoid corrupting the parent's ring
+        core.iouring_mode = false;
         const c_argv = std.heap.page_allocator.alloc([*c]u8, argv.len + 1) catch std.process.exit(126);
         defer std.heap.page_allocator.free(c_argv);
         for (argv, 0..) |arg, i| {
