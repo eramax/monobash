@@ -61,12 +61,12 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
     var buf: [4096]u8 = undefined;
     var len: usize = 0;
     var cursor: usize = 0;
-    var last_ch: u8 = 0;
+    var eof: bool = false;
 
     while (true) {
         var ch: u8 = undefined;
         const n = c.read(c.STDIN_FILENO, &ch, 1);
-        if (n <= 0) break;
+        if (n <= 0) { eof = true; break; }
 
         switch (ch) {
             3 => {
@@ -78,7 +78,7 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
             4 => {
                 if (len == 0) {
                     _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
-                    break;
+                    eof = true;
                 }
             },
             8, 127 => {
@@ -98,7 +98,6 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
             },
             10, 13 => {
                 _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
-                break;
             },
             27 => {
                 var seq: [2]u8 = undefined;
@@ -196,11 +195,10 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
             },
         }
 
-        last_ch = ch;
         if (ch == 10 or ch == 13) break;
     }
 
-    if (len == 0 and last_ch == 4) return null;
+    if (eof) return null;
     if (len == 0) return arena.dupe(u8, "") catch null;
     return arena.dupe(u8, buf[0..len]) catch null;
 }
