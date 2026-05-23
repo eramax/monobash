@@ -118,6 +118,8 @@ pub fn main(init: std.process.Init) !void {
         const line_z = arena.dupeZ(u8, line) catch continue;
         var ts_: c.struct_timespec = undefined;
         _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts_);
+        var ru_before: c.struct_rusage = undefined;
+        _ = c.getrusage(c.RUSAGE_CHILDREN, &ru_before);
         const tree = parser.parseString(line_z) orelse {
             const errmsg = "parse error\n";
             _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), init.io, errmsg) catch {};
@@ -133,8 +135,12 @@ pub fn main(init: std.process.Init) !void {
             const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
             var buf: [256]u8 = undefined;
             const ctr = core.uringCounts();
-            const s = std.fmt.bufPrint(&buf, " ── {d:.2}ms  io_uring: {d}W+{d}R  fallback: {d}W+{d}R\n", .{
+            var ru_after: c.struct_rusage = undefined;
+            _ = c.getrusage(c.RUSAGE_CHILDREN, &ru_after);
+            const maxrss_kb = ru_after.unnamed_0.ru_maxrss - ru_before.unnamed_0.ru_maxrss;
+            const s = std.fmt.bufPrint(&buf, " ── {d:.2}ms  {d}MB  io_uring: {d}W+{d}R  fallback: {d}W+{d}R\n", .{
                 elapsed_ms,
+                @as(f64, @floatFromInt(maxrss_kb)) / 1024.0,
                 ctr.write_ok, ctr.read_ok,
                 ctr.write_fallback, ctr.read_fallback,
             }) catch "";
