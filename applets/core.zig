@@ -194,4 +194,5 @@ pub const c = @cImport({
     @cInclude("dirent.h");
     @cInclude("errno.h");
     @cInclude("time.h");
+    @cInclude("sys/statvfs.h");
 });

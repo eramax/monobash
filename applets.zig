@@ -48,6 +48,27 @@ const applets = struct {
     const _mkdir = @import("applets/mkdir.zig");
     const _rmdir = @import("applets/rmdir.zig");
     const _touch = @import("applets/touch.zig");
+    const _sort = @import("applets/sort.zig");
+    const _sed = @import("applets/sed.zig");
+    const _strings = @import("applets/strings.zig");
+    const _tac = @import("applets/tac.zig");
+    const _split = @import("applets/split.zig");
+    const _diff = @import("applets/diff.zig");
+    const _more = @import("applets/more.zig");
+    const _less = @import("applets/less.zig");
+    const _ps = @import("applets/ps.zig");
+    const _top = @import("applets/top.zig");
+    const _mount = @import("applets/mount.zig");
+    const _stat = @import("applets/stat.zig");
+    const _du = @import("applets/du.zig");
+    const _df = @import("applets/df.zig");
+    const _xargs = @import("applets/xargs.zig");
+    const _bc = @import("applets/bc.zig");
+    const _ls = @import("applets/ls.zig");
+    const _find = @import("applets/find.zig");
+    const _tar = @import("applets/tar.zig");
+    const _gzip = @import("applets/gzip.zig");
+    const _dd = @import("applets/dd.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -106,6 +127,27 @@ const all_metas = &[_]core.AppletMeta{
     applets._mkdir.meta,
     applets._rmdir.meta,
     applets._touch.meta,
+    applets._sort.meta,
+    applets._sed.meta,
+    applets._strings.meta,
+    applets._tac.meta,
+    applets._split.meta,
+    applets._diff.meta,
+    applets._more.meta,
+    applets._less.meta,
+    applets._ps.meta,
+    applets._top.meta,
+    applets._mount.meta,
+    applets._stat.meta,
+    applets._du.meta,
+    applets._df.meta,
+    applets._xargs.meta,
+    applets._bc.meta,
+    applets._ls.meta,
+    applets._find.meta,
+    applets._tar.meta,
+    applets._gzip.meta,
+    applets._dd.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {
