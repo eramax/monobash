@@ -26,7 +26,6 @@ pub const c = @cImport({
     @cInclude("netinet/in.h");
     @cInclude("arpa/inet.h");
     @cInclude("netdb.h");
-    @cInclude("tree_sitter/api.h");
     @cInclude("sys/socket.h");
     @cInclude("netinet/in.h");
     @cInclude("arpa/inet.h");
