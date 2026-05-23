@@ -191,6 +191,11 @@ pub const c = @cImport({
     @cInclude("grp.h");
     @cInclude("stdlib.h");
     @cInclude("stdio.h");
+    @cInclude("signal.h");
+    @cInclude("sys/resource.h");
+    @cInclude("sched.h");
+    @cInclude("sys/file.h");
+    @cInclude("sys/personality.h");
     @cInclude("dirent.h");
     @cInclude("errno.h");
     @cInclude("time.h");
