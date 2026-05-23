@@ -32,6 +32,14 @@ pub fn build(b: *std.Build) void {
     });
     mod.addIncludePath(b.path("tree-sitter-bash"));
 
+    // mvzr (Minimum Viable Zig Regex) — directly as module (build.zig has API incompatibilities)
+    const mvzr_mod = b.createModule(.{
+        .root_source_file = b.path("deps/mvzr/src/mvzr.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("mvzr", mvzr_mod);
+
     const exe = b.addExecutable(.{
         .name = "monobash",
         .root_module = mod,

@@ -187,12 +187,11 @@ pub const c = @cImport({
     @cInclude("sys/utsname.h");
     @cInclude("sys/wait.h");
     @cInclude("fcntl.h");
-    @cInclude("regex.h");
     @cInclude("pwd.h");
     @cInclude("grp.h");
     @cInclude("stdlib.h");
     @cInclude("stdio.h");
-    @cInclude("time.h");
     @cInclude("dirent.h");
     @cInclude("errno.h");
+    @cInclude("time.h");
 });

@@ -1,5 +1,7 @@
 zig-out/
 .zig-cache/
 zig-cache/
+zig-pkg/
 *.o
 *.obj
+tests/compat/GAP_REPORT.md
