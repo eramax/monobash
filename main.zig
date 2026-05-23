@@ -5,6 +5,7 @@ const expand = @import("expand.zig");
 const executor = @import("executor.zig");
 const builtins = @import("builtins.zig");
 const applets = @import("applets.zig");
+const core = @import("applets/core.zig");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -27,6 +28,9 @@ pub fn main(init: std.process.Init) !void {
     defer var_store.deinit();
 
     executor.init(arena);
+
+    // Enable io_uring for async I/O (silently falls back if kernel < 5.1)
+    _ = core.initUring(64) catch {};
 
     if (args.len >= 3 and std.mem.eql(u8, args[1], "-c")) {
         var_store.command_flag = true;
