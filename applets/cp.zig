@@ -3,6 +3,19 @@ const core = @import("core.zig");
 
 pub const meta = core.AppletMeta{ .name = "cp", .main = main };
 
+const SymPolicy = enum { follow_args, follow_all, no_follow };
+
+const Flags = struct {
+    recursive: bool = false,
+    force: bool = false,
+    interactive: bool = false,
+    verbose: bool = false,
+    sym_policy: SymPolicy = .follow_args,
+    hardlink: bool = false,
+    symlink: bool = false,
+    parents: bool = false,
+};
+
 fn copyFile(src: [:0]const u8, dst: [:0]const u8) u8 {
     const fd_src = core.c.open(src.ptr, core.c.O_RDONLY);
     if (fd_src < 0) return 1;
@@ -18,13 +31,24 @@ fn copyFile(src: [:0]const u8, dst: [:0]const u8) u8 {
     }
 }
 
-fn copyDir(src: [:0]const u8, dst: [:0]const u8, verbose: bool) u8 {
+fn copySymlink(src: [:0]const u8, dst: [:0]const u8) u8 {
+    var buf: [4096]u8 = undefined;
+    const n = core.c.readlink(src.ptr, &buf, buf.len);
+    if (n < 0) return 1;
+    const target = buf[0..@intCast(n)];
+    var dbuf: [4096:0]u8 = undefined;
+    if (target.len >= dbuf.len) return 1;
+    @memcpy(dbuf[0..target.len], target);
+    dbuf[target.len] = 0;
+    if (core.c.symlink(dbuf[0..target.len :0].ptr, dst.ptr) < 0) return 1;
+    return 0;
+}
+
+fn copyDir(fl: *const Flags, src: [:0]const u8, dst: [:0]const u8) u8 {
     if (core.c.mkdir(dst.ptr, 0o755) != 0) {
         var st: core.c.struct_stat = undefined;
         if (core.c.stat(dst.ptr, &st) != 0) return 1;
         if ((st.st_mode & core.c.S_IFMT) != core.c.S_IFDIR) return 1;
-    } else if (verbose) {
-        core.eprint("cp: created directory '{s}'\n", .{dst});
     }
     const d = core.c.opendir(src.ptr) orelse return 1;
     defer _ = core.c.closedir(d);
@@ -47,65 +71,200 @@ fn copyDir(src: [:0]const u8, dst: [:0]const u8, verbose: bool) u8 {
         sub_dst[dst.len + 1 + name.len] = 0;
         const full_src = sub_src[0..src.len + 1 + name.len :0];
         const full_dst = sub_dst[0..dst.len + 1 + name.len :0];
-        var st: core.c.struct_stat = undefined;
-        if (core.c.stat(full_src.ptr, &st) == 0 and (st.st_mode & core.c.S_IFMT) == core.c.S_IFDIR) {
-            if (copyDir(full_src, full_dst, verbose) != 0) return 1;
-        } else {
-            if (verbose) core.eprint("cp: '{s}' -> '{s}'\n", .{full_src, full_dst});
-            if (copyFile(full_src, full_dst) != 0) return 1;
-        }
+        if (copyOne(fl, full_src, full_dst, false) != 0) return 1;
     }
     return 0;
 }
 
+fn copyOne(fl: *const Flags, src: [:0]const u8, dst: [:0]const u8, is_cmdline: bool) u8 {
+    // Check if source is a symlink
+    var lst: core.c.struct_stat = undefined;
+    const is_symlink = core.c.lstat(src.ptr, &lst) == 0 and (lst.st_mode & core.c.S_IFMT) == core.c.S_IFLNK;
+
+    // Determine whether to follow
+    const follow = is_symlink and (fl.sym_policy == .follow_all or (fl.sym_policy == .follow_args and is_cmdline));
+
+    if (is_symlink and !follow) {
+        // Copy the symlink itself
+        if (fl.hardlink) {
+            var buf: [4096]u8 = undefined;
+            const n = core.c.readlink(src.ptr, &buf, buf.len);
+            if (n < 0) return 1;
+            const target = buf[0..@intCast(n)];
+            var dbuf: [4096:0]u8 = undefined;
+            if (target.len >= dbuf.len) return 1;
+            @memcpy(dbuf[0..target.len], target);
+            dbuf[target.len] = 0;
+            if (core.c.link(dbuf[0..target.len :0].ptr, dst.ptr) < 0) return 1;
+            return 0;
+        }
+        if (fl.symlink) {
+            return copySymlink(src, dst);
+        }
+        return copySymlink(src, dst);
+    }
+
+    // Get target info (following symlink if applicable)
+    var st: core.c.struct_stat = undefined;
+    if (follow) {
+        if (core.c.stat(src.ptr, &st) != 0) return 1;
+    } else {
+        if (core.c.lstat(src.ptr, &st) != 0) return 1;
+    }
+
+    if ((st.st_mode & core.c.S_IFMT) == core.c.S_IFDIR) {
+        if (!fl.recursive) {
+            core.eprint("cp: omitting directory '{s}'\n", .{src});
+            return 1;
+        }
+        return copyDir(fl, src, dst);
+    }
+
+    // Regular file
+    if (fl.hardlink) {
+        if (core.c.link(src.ptr, dst.ptr) < 0) return 1;
+        return 0;
+    }
+    if (fl.symlink) {
+        var buf: [4096]u8 = undefined;
+        const n = core.c.readlink(src.ptr, &buf, buf.len);
+        if (n < 0) return 1;
+        const target = buf[0..@intCast(n)];
+        var dbuf: [4096:0]u8 = undefined;
+        if (target.len >= dbuf.len) return 1;
+        @memcpy(dbuf[0..target.len], target);
+        dbuf[target.len] = 0;
+        if (core.c.symlink(dbuf[0..target.len :0].ptr, dst.ptr) < 0) return 1;
+        return 0;
+    }
+
+    return copyFile(src, dst);
+}
+
 pub fn main(args: [][]const u8) u8 {
+    var fl = Flags{};
+    var sym_set = false;
     var i: usize = 1;
-    var recursive = false;
-    var force = false;
-    var interactive = false;
-    var verbose = false;
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
         if (std.mem.eql(u8, args[i], "--")) { i += 1; break; }
+        if (std.mem.eql(u8, args[i], "--parents")) { fl.parents = true; i += 1; continue; }
+        if (args[i].len > 2 and args[i][1] == '-') { i += 1; continue; } // skip unknown long opts
         for (args[i][1..]) |c| {
             switch (c) {
-                'r', 'R' => recursive = true,
-                'f' => force = true,
-                'i' => interactive = true,
-                'v' => verbose = true,
+                'a' => { fl.recursive = true; fl.sym_policy = .no_follow; sym_set = true; },
+                'r', 'R' => fl.recursive = true,
+                'f' => fl.force = true,
+                'i' => fl.interactive = true,
+                'v' => fl.verbose = true,
+                'd' => { fl.sym_policy = .no_follow; sym_set = true; },
+                'P' => { fl.sym_policy = .no_follow; sym_set = true; },
+                'H' => { fl.sym_policy = .follow_args; sym_set = true; },
+                'L' => { fl.sym_policy = .follow_all; sym_set = true; },
+                'l' => fl.hardlink = true,
+                's' => fl.symlink = true,
                 else => return 1,
             }
         }
         i += 1;
     }
+    // Default: -R implies no_follow, otherwise follow_args
+    if (!sym_set and fl.recursive) fl.sym_policy = .no_follow;
     if (i + 1 >= args.len) return 1;
-    const src = args[i];
-    const dst = args[i + 1];
-    if (src.len == 0 or dst.len == 0) return 1;
-    var src_buf: [4096:0]u8 = undefined;
+
+    const src_names = args[i .. args.len - 1];
+    const dst_name = args[args.len - 1];
+
+    if (src_names.len == 0) return 1;
+
+    // If destination is a directory, copy each source into it
     var dst_buf: [4096:0]u8 = undefined;
-    if (src.len >= src_buf.len or dst.len >= dst_buf.len) return 1;
-    @memcpy(src_buf[0..src.len], src);
-    src_buf[src.len] = 0;
-    @memcpy(dst_buf[0..dst.len], dst);
-    dst_buf[dst.len] = 0;
-    const src_z = src_buf[0..src.len :0];
-    const dst_z = dst_buf[0..dst.len :0];
-    const fd = core.c.open(dst_z.ptr, core.c.O_RDONLY);
-    if (fd >= 0) {
-        _ = core.c.close(fd);
-        if (interactive) {
-            core.writeAll(1, "overwrite '");
-            core.writeAll(1, dst);
-            core.writeAll(1, "'? ");
-            var resp: [4]u8 = undefined;
-            const n = core.c.read(0, &resp, resp.len);
-            if (n <= 0 or (resp[0] != 'y' and resp[0] != 'Y')) return 0;
+    if (dst_name.len >= dst_buf.len) return 1;
+    @memcpy(dst_buf[0..dst_name.len], dst_name);
+    dst_buf[dst_name.len] = 0;
+    const dst_z = dst_buf[0..dst_name.len :0];
+    var dst_st: core.c.struct_stat = undefined;
+    const dst_is_dir = core.c.stat(dst_z.ptr, &dst_st) == 0 and (dst_st.st_mode & core.c.S_IFMT) == core.c.S_IFDIR;
+
+    var rc: u8 = 0;
+    for (src_names) |src| {
+        var s_buf: [4096:0]u8 = undefined;
+        if (src.len >= s_buf.len) { rc = 1; continue; }
+        @memcpy(s_buf[0..src.len], src);
+        s_buf[src.len] = 0;
+        const src_z = s_buf[0..src.len :0];
+
+        if (fl.parents) {
+            // --parents: Create intermediate directories
+            var path_copy: [4096:0]u8 = undefined;
+            if (dst_name.len + 1 + src.len >= path_copy.len) { rc = 1; continue; }
+            @memcpy(path_copy[0..dst_name.len], dst_name);
+            path_copy[dst_name.len] = '/';
+            @memcpy(path_copy[dst_name.len + 1 .. dst_name.len + 1 + src.len], src);
+            path_copy[dst_name.len + 1 + src.len] = 0;
+            const full_dst_path = path_copy[0..dst_name.len + 1 + src.len :0];
+
+            // Create intermediate dirs (all but the last component)
+            const last_component_start = std.mem.lastIndexOfScalar(u8, src, '/') orelse 0;
+            if (last_component_start > 0) {
+                var seg: usize = 0;
+                while (seg < last_component_start) {
+                    var sl = seg;
+                    while (sl < src.len and src[sl] != '/') sl += 1;
+                    if (sl > seg) {
+                        var mkpath: [4096:0]u8 = undefined;
+                        if (dst_name.len + 1 + sl >= mkpath.len) { seg = sl + 1; continue; }
+                        @memcpy(mkpath[0..dst_name.len], dst_name);
+                        mkpath[dst_name.len] = '/';
+                        @memcpy(mkpath[dst_name.len + 1 .. dst_name.len + 1 + sl], src[0..sl]);
+                        mkpath[dst_name.len + 1 + sl] = 0;
+                        _ = core.c.mkdir(mkpath[0..dst_name.len + 1 + sl :0].ptr, 0o755);
+                    }
+                    seg = sl + 1;
+                }
+            }
+            const r = copyOne(&fl, src_z, full_dst_path, true);
+            if (r > rc) rc = r;
+        } else if (dst_is_dir) {
+            // Copy into directory: src -> dst/basename(src)
+            var path_buf: [4096:0]u8 = undefined;
+            const base = std.fs.path.basename(src);
+            if (dst_name.len + 1 + base.len >= path_buf.len) { rc = 1; continue; }
+            @memcpy(path_buf[0..dst_name.len], dst_name);
+            path_buf[dst_name.len] = '/';
+            @memcpy(path_buf[dst_name.len + 1 .. dst_name.len + 1 + base.len], base);
+            path_buf[dst_name.len + 1 + base.len] = 0;
+            const pdst = path_buf[0..dst_name.len + 1 + base.len :0];
+
+            if (fl.interactive) {
+                var st: core.c.struct_stat = undefined;
+                if (core.c.stat(pdst.ptr, &st) == 0) {
+                    core.writeAll(1, "cp: overwrite '");
+                    core.writeAll(1, pdst);
+                    core.writeAll(1, "'? ");
+                    var resp: [4]u8 = undefined;
+                    const n = core.c.read(0, &resp, resp.len);
+                    if (n <= 0 or (resp[0] != 'y' and resp[0] != 'Y')) continue;
+                }
+            }
+
+            const r = copyOne(&fl, src_z, pdst, true);
+            if (r > rc) rc = r;
+        } else {
+            // Single source to single destination (last arg)
+            if (fl.interactive) {
+                var st: core.c.struct_stat = undefined;
+                if (core.c.stat(dst_z.ptr, &st) == 0) {
+                    core.writeAll(1, "cp: overwrite '");
+                    core.writeAll(1, dst_name);
+                    core.writeAll(1, "'? ");
+                    var resp: [4]u8 = undefined;
+                    const n = core.c.read(0, &resp, resp.len);
+                    if (n <= 0 or (resp[0] != 'y' and resp[0] != 'Y')) return 0;
+                }
+            }
+            const r = copyOne(&fl, src_z, dst_z, true);
+            return if (r > rc) r else rc;
         }
     }
-    var st: core.c.struct_stat = undefined;
-    if (recursive and core.c.stat(src_z.ptr, &st) == 0 and (st.st_mode & core.c.S_IFMT) == core.c.S_IFDIR) {
-        return copyDir(src_z, dst_z, verbose);
-    }
-    if (verbose) core.eprint("cp: '{s}' -> '{s}'\n", .{src, dst});
-    return copyFile(src_z, dst_z);
+    return rc;
 }
