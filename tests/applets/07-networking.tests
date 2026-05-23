@@ -1,0 +1,11 @@
+@ifconfig
+ifconfig 2>/dev/null | head -5
+
+@route
+route -n 2>/dev/null | head -5
+
+@arp
+arp 2>/dev/null | head -3
+
+@nslookup localhost
+nslookup localhost 2>/dev/null | head -5

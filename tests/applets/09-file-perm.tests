@@ -1,0 +1,5 @@
+@chmod
+touch /tmp/_mono_test_chmod && chmod 644 /tmp/_mono_test_chmod && ls -la /tmp/_mono_test_chmod | awk '{print $1}'
+
+@mkfifo
+mkfifo /tmp/_mono_test_fifo 2>/dev/null && ls -la /tmp/_mono_test_fifo | awk '{print $1}'

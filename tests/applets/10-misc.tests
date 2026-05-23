@@ -1,0 +1,23 @@
+@test -f
+test -f /etc/hostname && echo yes || echo no
+
+@test -d
+test -d /tmp && echo yes || echo no
+
+@date
+date 2>/dev/null | head -1
+
+@realpath
+realpath /etc/../etc/hostname 2>/dev/null
+
+@readlink
+readlink /proc/self/exe 2>/dev/null | head -1
+
+@mktemp
+mktemp -u /tmp/_mono_test_XXXXXX
+
+@pathchk
+pathchk /etc/hostname 2>/dev/null && echo yes || echo no
+
+@sync
+sync; echo ok

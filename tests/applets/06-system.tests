@@ -1,0 +1,44 @@
+@uname
+uname
+
+@uname -a
+uname -a 2>/dev/null | head -1
+
+@hostname
+hostname
+
+@arch
+arch
+
+@nproc
+nproc
+
+@whoami
+whoami
+
+@id
+id | head -1
+
+@id -u
+id -u
+
+@groups
+groups | head -1
+
+@logname
+logname
+
+@uptime
+uptime 2>/dev/null | head -1
+
+@ps
+ps 2>/dev/null | head -5
+
+@tty
+tty
+
+@hostid
+hostid
+
+@kill -l
+kill -l 2>/dev/null | head -3

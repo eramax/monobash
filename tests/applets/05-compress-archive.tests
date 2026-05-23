@@ -1,0 +1,20 @@
+@md5sum
+echo hello > /tmp/_mono_test_md5 && md5sum /tmp/_mono_test_md5
+
+@cksum
+echo hello > /tmp/_mono_test_cksum && cksum /tmp/_mono_test_cksum
+
+@sum
+echo hello > /tmp/_mono_test_sum && sum /tmp/_mono_test_sum
+
+@base64 encode
+echo hello | base64
+
+@base64 decode
+echo aGVsbG8K | base64 -d
+
+@base32 encode
+echo hello | base32
+
+@basenc
+echo hello | basenc --base64

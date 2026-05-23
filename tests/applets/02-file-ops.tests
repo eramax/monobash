@@ -1,0 +1,29 @@
+@cat stdin
+echo hello | cat
+
+@cp file
+cp /etc/hostname /tmp/_mono_test_cp && cat /tmp/_mono_test_cp && rm -f /tmp/_mono_test_cp
+
+@mv file
+touch /tmp/_mono_test_mv && mv /tmp/_mono_test_mv /tmp/_mono_test_mv2 && ls /tmp/_mono_test_mv2 && rm -f /tmp/_mono_test_mv2
+
+@mkdir
+mkdir -p /tmp/_mono_test_mkdir && ls -d /tmp/_mono_test_mkdir && rmdir /tmp/_mono_test_mkdir
+
+@rmdir
+mkdir /tmp/_mono_test_rmdir && rmdir /tmp/_mono_test_rmdir && ls -d /tmp/_mono_test_rmdir 2>/dev/null || true
+
+@touch
+touch /tmp/_mono_test_touch && ls /tmp/_mono_test_touch && rm -f /tmp/_mono_test_touch
+
+@ln hardlink
+touch /tmp/_mono_test_ln && ln /tmp/_mono_test_ln /tmp/_mono_test_ln2 && ls /tmp/_mono_test_ln2 && rm -f /tmp/_mono_test_ln /tmp/_mono_test_ln2
+
+@ln symlink
+ln -s /tmp /tmp/_mono_test_lns && ls -la /tmp/_mono_test_lns | grep '\->' && rm -f /tmp/_mono_test_lns
+
+@truncate
+touch /tmp/_mono_test_trunc && truncate -s 100 /tmp/_mono_test_trunc && ls -la /tmp/_mono_test_trunc | awk '{print $5}' && rm -f /tmp/_mono_test_trunc
+
+@unlink
+touch /tmp/_mono_test_unlink && unlink /tmp/_mono_test_unlink && ls /tmp/_mono_test_unlink 2>/dev/null || true

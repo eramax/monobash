@@ -1,0 +1,20 @@
+@ls
+ls /tmp
+
+@ls -la
+ls -la /etc/hostname
+
+@ls -a
+ls -a /tmp | head -5
+
+@find -name
+find /etc -name 'hostname' 2>/dev/null
+
+@stat file
+stat /etc/hostname 2>/dev/null | head -5
+
+@du
+du -s /etc 2>/dev/null
+
+@df
+df /tmp 2>/dev/null | head -3

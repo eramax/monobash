@@ -1,0 +1,26 @@
+@true exits 0
+true
+
+@false exits 1
+false
+
+@echo basic
+echo hello world
+
+@echo -n
+echo -n hello
+
+@yes output
+yes | head -3
+
+@basename
+basename /foo/bar/baz
+
+@basename strip suffix
+basename /foo/bar.txt .txt
+
+@dirname
+dirname /foo/bar/baz
+
+@sleep short
+sleep 0

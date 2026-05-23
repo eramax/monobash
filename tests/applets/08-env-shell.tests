@@ -1,0 +1,35 @@
+@env
+env | head -5
+
+@printenv HOME
+printenv HOME
+
+@which ls
+which ls
+
+@which cat
+which cat
+
+@seq
+seq 1 5
+
+@seq with step
+seq 1 2 10
+
+@expr addition
+expr 2 + 3
+
+@expr multiplication
+expr 4 \* 5
+
+@bc basic
+echo '2+3' | bc 2>/dev/null
+
+@clear
+clear 2>/dev/null; echo ok
+
+@timeout true
+timeout 1 true
+
+@nice true
+nice true

@@ -1,0 +1,47 @@
+@head -n 3
+seq 1 10 | head -n 3
+
+@tail -n 3
+seq 1 10 | tail -n 3
+
+@wc
+echo hello world | wc
+
+@wc -l
+seq 1 5 | wc -l
+
+@wc -w
+echo "a b c" | wc -w
+
+@wc -c
+echo abc | wc -c
+
+@sort
+printf 'c\nb\na\n' | sort
+
+@sort -r
+printf 'a\nb\nc\n' | sort -r
+
+@uniq
+printf 'a\na\nb\n' | uniq
+
+@cut -f
+printf 'a\tb\tc' | cut -f2
+
+@cut -d:
+echo a:b:c | cut -d: -f2
+
+@tr
+echo hello | tr a-z A-Z
+
+@tr -d
+echo hello | tr -d l
+
+@tee
+echo test | tee /tmp/_mono_tee_test && cat /tmp/_mono_tee_test && rm -f /tmp/_mono_tee_test
+
+@tac
+printf 'a\nb\nc' | tac
+
+@strings
+strings /bin/ls 2>/dev/null | head -3
