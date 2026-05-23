@@ -6,16 +6,27 @@ pub fn main(args: [][]const u8) u8 {
     var data_type: u8 = 'o';
     var i: usize = 1;
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
-        if (std.mem.eql(u8, args[i], "-A")) {
-            i += 1;
-            if (i >= args.len) return core.die(1, "od: missing argument after -A\n", .{});
-            if (args[i].len > 0) addr_radix = args[i][0];
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "-t")) {
-            i += 1;
-            if (i >= args.len) return core.die(1, "od: missing argument after -t\n", .{});
-            if (args[i].len > 0) data_type = args[i][0];
-            i += 1;
+        const arg = args[i];
+        if (arg.len > 1 and arg[1] == 'A') {
+            if (arg.len > 2) {
+                addr_radix = arg[2];
+                i += 1;
+            } else {
+                i += 1;
+                if (i >= args.len) return core.die(1, "od: missing argument after -A\n", .{});
+                if (args[i].len > 0) addr_radix = args[i][0];
+                i += 1;
+            }
+        } else if (arg.len > 1 and arg[1] == 't') {
+            if (arg.len > 2) {
+                data_type = arg[2];
+                i += 1;
+            } else {
+                i += 1;
+                if (i >= args.len) return core.die(1, "od: missing argument after -t\n", .{});
+                if (args[i].len > 0) data_type = args[i][0];
+                i += 1;
+            }
         } else return core.die(1, "od: unknown option: {s}\n", .{args[i]});
     }
     const files = args[i..];
@@ -66,6 +77,7 @@ fn dumpOctal(data: []const u8, addr_radix: u8, data_type: u8) void {
 }
 fn fmtAddr(buf: []u8, addr: usize, radix: u8) []u8 {
     return switch (radix) {
+        'n' => "",
         'd' => std.fmt.bufPrint(buf, "{d:7}", .{addr}) catch "",
         'x' => std.fmt.bufPrint(buf, "{x:7}", .{addr}) catch "",
         else => std.fmt.bufPrint(buf, "{o:7}", .{addr}) catch "",
@@ -74,7 +86,7 @@ fn fmtAddr(buf: []u8, addr: usize, radix: u8) []u8 {
 fn fmtByte(buf: []u8, byte: u8, dt: u8) []u8 {
     return switch (dt) {
         'd' => std.fmt.bufPrint(buf, "{d:3}", .{byte}) catch "",
-        'x' => std.fmt.bufPrint(buf, "{x:2}", .{byte}) catch "",
+        'x' => std.fmt.bufPrint(buf, "{x:02}", .{byte}) catch "",
         else => std.fmt.bufPrint(buf, "{o:3}", .{byte}) catch "",
     };
 }

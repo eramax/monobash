@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
 
     const cflags = &.{ "-std=c11", "-D_GNU_SOURCE" };
 
+    mod.addIncludePath(b.path("."));
+
     // tree-sitter library (lib.c includes all other .c files via #include)
     mod.addCSourceFile(.{
         .file = b.path("tree-sitter/lib/src/lib.c"),

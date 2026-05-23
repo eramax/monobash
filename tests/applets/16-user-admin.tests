@@ -1,0 +1,28 @@
+# User and administration applet tests
+#
+@addgroup
+addgroup --help 2>/dev/null | head -3
+
+@adduser
+adduser --help 2>/dev/null | head -3
+
+@chown
+touch /tmp/_mono_chown && chown $(id -u):$(id -g) /tmp/_mono_chown 2>/dev/null && rm -f /tmp/_mono_chown
+
+@login
+login --help 2>/dev/null | head -3
+
+@passwd
+passwd --help 2>/dev/null | head -3
+
+@pinky
+pinky 2>/dev/null | head -3
+
+@su
+su --help 2>/dev/null | head -3
+
+@users
+users
+
+@who
+who 2>/dev/null | head -3

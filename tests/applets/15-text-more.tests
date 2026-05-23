@@ -1,0 +1,52 @@
+# Additional text processing applet tests
+#
+@comm
+printf 'a\nb\n' > /tmp/_mono_c1 && printf 'b\nc\n' > /tmp/_mono_c2 && comm /tmp/_mono_c1 /tmp/_mono_c2 && rm -f /tmp/_mono_c1 /tmp/_mono_c2
+
+@expand
+printf 'a\tb\n' | expand
+
+@fmt
+echo 'hello world' | fmt
+
+@fold
+echo 'hello' | fold -w 2
+
+@join
+printf '1 a\n2 b\n' > /tmp/_mono_j1 && printf '1 x\n2 y\n' > /tmp/_mono_j2 && join /tmp/_mono_j1 /tmp/_mono_j2 && rm -f /tmp/_mono_j1 /tmp/_mono_j2
+
+@nl
+printf 'a\nb\nc\n' | nl
+
+@numfmt
+echo '1000' | numfmt --to=si
+
+@od
+printf 'hello' | od -A x -t x1z | head -3
+
+@paste
+printf 'a\nb\n' | paste - -
+
+@pr
+printf 'a\nb\nc\n' | pr -3 2>/dev/null
+
+@unexpand
+printf '    hello\n' | unexpand
+
+@cal
+cal 2025 2>/dev/null | head -5
+
+@cmp
+echo a > /tmp/_mono_cmp1 && echo b > /tmp/_mono_cmp2 && cmp /tmp/_mono_cmp1 /tmp/_mono_cmp2 2>/dev/null && rm -f /tmp/_mono_cmp1 /tmp/_mono_cmp2
+
+@dc
+echo '2 3 + p' | dc 2>/dev/null
+
+@hexdump
+echo hello | hexdump 2>/dev/null | head -3
+
+@rev
+echo hello | rev
+
+@awk
+echo hello world | awk '{print $1}'

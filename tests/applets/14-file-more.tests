@@ -1,0 +1,16 @@
+# Additional file operation applet tests
+#
+@dd
+dd if=/dev/zero of=/dev/null bs=512 count=1 2>/dev/null
+
+@install
+install -d /tmp/_mono_install 2>/dev/null && rmdir /tmp/_mono_install
+
+@mknod
+mknod /tmp/_mono_node p 2>/dev/null && rm -f /tmp/_mono_node
+
+@shred
+touch /tmp/_mono_shred && shred -n 1 /tmp/_mono_shred 2>/dev/null && rm -f /tmp/_mono_shred
+
+@link
+touch /tmp/_mono_link_src && link /tmp/_mono_link_src /tmp/_mono_link_dst && ls /tmp/_mono_link_dst && rm -f /tmp/_mono_link_src /tmp/_mono_link_dst

@@ -155,6 +155,16 @@ const applets = struct {
     const _route = @import("applets/route.zig");
     const _arp = @import("applets/arp.zig");
     const _ftp = @import("applets/ftp.zig");
+    const _cmp = @import("applets/cmp.zig");
+    const _hexdump = @import("applets/hexdump.zig");
+    const _rev = @import("applets/rev.zig");
+    const _cal = @import("applets/cal.zig");
+    const _dc = @import("applets/dc.zig");
+    const _watch = @import("applets/watch.zig");
+    const _tree = @import("applets/tree.zig");
+    const _vi = @import("applets/vi.zig");
+    const _patch = @import("applets/patch.zig");
+    const _awk = @import("applets/awk.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -323,6 +333,16 @@ const all_metas = &[_]core.AppletMeta{
     applets._unzip.meta,
     applets._zcat.meta,
     applets._zip.meta,
+    applets._cmp.meta,
+    applets._hexdump.meta,
+    applets._rev.meta,
+    applets._cal.meta,
+    applets._dc.meta,
+    applets._watch.meta,
+    applets._tree.meta,
+    applets._vi.meta,
+    applets._patch.meta,
+    applets._awk.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {

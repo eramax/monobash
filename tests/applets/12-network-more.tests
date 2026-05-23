@@ -1,0 +1,13 @@
+# Additional networking applet tests
+#
+@ping
+ping -c 1 localhost 2>/dev/null | head -3
+
+@nc
+nc -h 2>/dev/null | head -3
+
+@wget
+wget --version 2>/dev/null | head -1
+
+@ftp
+ftp -h 2>/dev/null | head -3

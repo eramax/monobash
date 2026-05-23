@@ -4,7 +4,7 @@ pub const meta = core.AppletMeta{ .name = "nohup", .main = main };
 
 pub fn main(args: [][]const u8) u8 {
     if (args.len < 2) return 1;
-    _ = core.c.signal(core.c.SIGHUP, core.c.SIG_IGN);
+    _ = core.c.signal(core.c.SIGHUP, @ptrFromInt(@as(usize, 1)));
     const alloc = std.heap.page_allocator;
     const c_argv = alloc.alloc([*c]u8, args.len - 1 + 1) catch return 1;
     for (args[1..], 0..) |arg, i| {

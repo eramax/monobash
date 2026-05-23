@@ -1,0 +1,31 @@
+# Archive and compression applet tests
+#
+@gzip compress
+echo test > /tmp/_mono_gz && gzip /tmp/_mono_gz && ls /tmp/_mono_gz.gz && rm -f /tmp/_mono_gz.gz
+
+@gzip decompress
+echo test > /tmp/_mono_gz2 && gzip /tmp/_mono_gz2 && gzip -d /tmp/_mono_gz2.gz && cat /tmp/_mono_gz2 && rm -f /tmp/_mono_gz2
+
+@tar create
+tar -cf /tmp/_mono_tar.tar /etc/hostname 2>/dev/null && tar -tf /tmp/_mono_tar.tar && rm -f /tmp/_mono_tar.tar
+
+@tar extract
+touch /tmp/_mono_tar2 && tar -cf /tmp/_mono_tar2.tar /tmp/_mono_tar2 2>/dev/null && tar -xf /tmp/_mono_tar2.tar -C /tmp 2>/dev/null && rm -f /tmp/_mono_tar2 /tmp/_mono_tar2.tar
+
+@compress
+compress -f /tmp/_mono_cmp 2>/dev/null; echo ok
+
+@cpio
+ls /etc/hostname | cpio -o 2>/dev/null | head -c 20
+
+@zcat
+echo test > /tmp/_mono_zc && gzip /tmp/_mono_zc && zcat /tmp/_mono_zc.gz && rm -f /tmp/_mono_zc.gz /tmp/_mono_zc
+
+@unzip
+unzip -h 2>/dev/null | head -1
+
+@zip
+zip -v 2>/dev/null | head -1
+
+@rpm2cpio
+rpm2cpio 2>/dev/null; echo ok

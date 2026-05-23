@@ -1,0 +1,31 @@
+# Additional system applet tests
+#
+@chrt
+chrt -p $$ 2>/dev/null | head -1
+
+@chroot
+chroot / true 2>/dev/null; echo ok
+
+@dmesg
+dmesg -n 1 2>/dev/null; echo ok
+
+@ionice
+ionice -p $$ 2>/dev/null
+
+@nohup
+nohup true 2>/dev/null; echo ok
+
+@renice
+renice -n 0 -p $$ 2>/dev/null
+
+@setarch
+setarch $(uname -m) true 2>/dev/null; echo ok
+
+@setsid
+setsid true 2>/dev/null; echo ok
+
+@stdbuf
+stdbuf -oL true 2>/dev/null; echo ok
+
+@top
+top -b -n 1 2>/dev/null | head -10

@@ -1,0 +1,109 @@
+# Miscellaneous applet tests
+#
+@chcon
+chcon --help 2>/dev/null | head -3
+
+@crond
+crond --help 2>/dev/null | head -3
+
+@crontab
+crontab -l 2>/dev/null | head -3
+
+@csplit
+echo test > /tmp/_mono_cs && csplit /tmp/_mono_cs 1 2>/dev/null && rm -f /tmp/_mono_cs xx00 xx01
+
+@diff
+echo a > /tmp/_mono_d1 && echo b > /tmp/_mono_d2 && diff /tmp/_mono_d1 /tmp/_mono_d2 && rm -f /tmp/_mono_d1 /tmp/_mono_d2
+
+@dircolors
+dircolors 2>/dev/null | head -3
+
+@factor
+factor 42
+
+@flock
+touch /tmp/_mono_flock && flock -n /tmp/_mono_flock true 2>/dev/null && rm -f /tmp/_mono_flock
+
+@grep
+echo hello world | grep hello
+
+@halt
+halt --help 2>/dev/null | head -3
+
+@init
+init --help 2>/dev/null | head -3
+
+@less
+less --version 2>/dev/null | head -1
+
+@logger
+logger test_msg 2>/dev/null; echo ok
+
+@mesg
+mesg 2>/dev/null; echo ok
+
+@modinfo
+modinfo -h 2>/dev/null | head -3
+
+@modprobe
+modprobe --help 2>/dev/null | head -3
+
+@more
+more --version 2>/dev/null | head -1
+
+@mount
+mount 2>/dev/null | head -3
+
+@poweroff
+poweroff --help 2>/dev/null | head -3
+
+@ptx
+echo test | ptx 2>/dev/null | head -3
+
+@reboot
+reboot --help 2>/dev/null | head -3
+
+@rm
+touch /tmp/_mono_rm && rm /tmp/_mono_rm && echo ok
+
+@runcon
+runcon --help 2>/dev/null | head -3
+
+@sed
+echo hello | sed 's/hello/world/'
+
+@shuf
+seq 1 10 | shuf -n 3 2>/dev/null
+
+@split
+echo test > /tmp/_mono_split && split -l 1 /tmp/_mono_split 2>/dev/null && rm -f /tmp/_mono_split xa* 2>/dev/null
+
+@stty
+stty -a 2>/dev/null | head -3
+
+@syslogd
+syslogd --help 2>/dev/null | head -3
+
+@tsort
+printf 'a b\nb c\n' | tsort
+
+@wall
+wall --help 2>/dev/null | head -3
+
+@write
+write --help 2>/dev/null | head -3
+
+@xargs
+echo hello | xargs echo
+
+@patch
+echo test > /tmp/_mono_patch_orig && echo '1c1' > /tmp/_mono_patch_d && echo '< patched' >> /tmp/_mono_patch_d && patch /tmp/_mono_patch_orig /tmp/_mono_patch_d 2>/dev/null && rm -f /tmp/_mono_patch_orig /tmp/_mono_patch_d
+
+@tree
+tree /etc/hostname 2>/dev/null | head -3
+
+@vi
+vi --version 2>/dev/null | head -1
+
+@watch
+watch -n 1 true 2>/dev/null; echo ok
