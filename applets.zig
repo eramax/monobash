@@ -174,6 +174,93 @@ const applets = struct {
     const _telnet = @import("applets/telnet.zig");
     const _tftp = @import("applets/tftp.zig");
     const _traceroute = @import("applets/traceroute.zig");
+    // --- Batch 6: Networking ---
+    const _brctl = @import("applets/brctl.zig");
+    const _chat = @import("applets/chat.zig");
+    const _dhcprelay = @import("applets/dhcprelay.zig");
+    const _dnsd = @import("applets/dnsd.zig");
+    const _dnsdomainname = @import("applets/dnsdomainname.zig");
+    const _ftpget = @import("applets/ftpget.zig");
+    const _ftpput = @import("applets/ftpput.zig");
+    const _getty = @import("applets/getty.zig");
+    const _ifenslave = @import("applets/ifenslave.zig");
+    const _ifplugd = @import("applets/ifplugd.zig");
+    const _inetd = @import("applets/inetd.zig");
+    const _ipaddr = @import("applets/ipaddr.zig");
+    const _ipcalc = @import("applets/ipcalc.zig");
+    const _ipcrm = @import("applets/ipcrm.zig");
+    const _ipcs = @import("applets/ipcs.zig");
+    const _iplink = @import("applets/iplink.zig");
+    const _ipneigh = @import("applets/ipneigh.zig");
+    const _iproute = @import("applets/iproute.zig");
+    const _iprule = @import("applets/iprule.zig");
+    const _iptunnel = @import("applets/iptunnel.zig");
+    const _lpd = @import("applets/lpd.zig");
+    const _lpq = @import("applets/lpq.zig");
+    const _lpr = @import("applets/lpr.zig");
+    const _nameif = @import("applets/nameif.zig");
+    const _nbd_client = @import("applets/nbd-client.zig");
+    const _ping6 = @import("applets/ping6.zig");
+    const _popmaildir = @import("applets/popmaildir.zig");
+    const _pscan = @import("applets/pscan.zig");
+    const _rdate = @import("applets/rdate.zig");
+    const _sendmail = @import("applets/sendmail.zig");
+    const _slattach = @import("applets/slattach.zig");
+    const _ssl_client = @import("applets/ssl_client.zig");
+    const _tcpsvd = @import("applets/tcpsvd.zig");
+    const _telnetd = @import("applets/telnetd.zig");
+    const _tftpd = @import("applets/tftpd.zig");
+    const _traceroute6 = @import("applets/traceroute6.zig");
+    const _udhcpc = @import("applets/udhcpc.zig");
+    const _udhcpd = @import("applets/udhcpd.zig");
+    const _udpsvd = @import("applets/udpsvd.zig");
+    const _zcip = @import("applets/zcip.zig");
+    // --- Batch 6: Process/Signal ---
+    const _killall = @import("applets/killall.zig");
+    const _killall5 = @import("applets/killall5.zig");
+    const _pkill = @import("applets/pkill.zig");
+    const _powertop = @import("applets/powertop.zig");
+    const _runlevel = @import("applets/runlevel.zig");
+    const _runsv = @import("applets/runsv.zig");
+    const _runsvdir = @import("applets/runsvdir.zig");
+    const _svc = @import("applets/svc.zig");
+    const _svlogd = @import("applets/svlogd.zig");
+    const _time = @import("applets/time.zig");
+    const _usleep = @import("applets/usleep.zig");
+    const _w = @import("applets/w.zig");
+    const _watchdog = @import("applets/watchdog.zig");
+    // --- Batch 6: Security/Auth ---
+    const _add_shell = @import("applets/add-shell.zig");
+    const _chpasswd = @import("applets/chpasswd.zig");
+    const _cryptpw = @import("applets/cryptpw.zig");
+    const _delgroup = @import("applets/delgroup.zig");
+    const _deluser = @import("applets/deluser.zig");
+    const _envuidgid = @import("applets/envuidgid.zig");
+    const _mkpasswd = @import("applets/mkpasswd.zig");
+    const _remove_shell = @import("applets/remove-shell.zig");
+    const _setpriv = @import("applets/setpriv.zig");
+    const _setserial = @import("applets/setserial.zig");
+    const _setuidgid = @import("applets/setuidgid.zig");
+    const _softlimit = @import("applets/softlimit.zig");
+    const _start_stop_daemon = @import("applets/start-stop-daemon.zig");
+    const _sulogin = @import("applets/sulogin.zig");
+    // --- Batch 6: Display/Terminal ---
+    const _beep = @import("applets/beep.zig");
+    const _chvt = @import("applets/chvt.zig");
+    const _deallocvt = @import("applets/deallocvt.zig");
+    const _dumpkmap = @import("applets/dumpkmap.zig");
+    const _fgconsole = @import("applets/fgconsole.zig");
+    const _kbd_mode = @import("applets/kbd_mode.zig");
+    const _loadfont = @import("applets/loadfont.zig");
+    const _loadkmap = @import("applets/loadkmap.zig");
+    const _openvt = @import("applets/openvt.zig");
+    const _setconsole = @import("applets/setconsole.zig");
+    const _setfont = @import("applets/setfont.zig");
+    const _setkeycodes = @import("applets/setkeycodes.zig");
+    const _setlogcons = @import("applets/setlogcons.zig");
+    const _showkey = @import("applets/showkey.zig");
+    const _ttysize = @import("applets/ttysize.zig");
+    // --- Compression (WIP — needs Zig 0.16 API migration) ---
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -361,6 +448,93 @@ const all_metas = &[_]core.AppletMeta{
     applets._telnet.meta,
     applets._tftp.meta,
     applets._traceroute.meta,
+    // --- Batch 6: Networking ---
+    applets._brctl.meta,
+    applets._chat.meta,
+    applets._dhcprelay.meta,
+    applets._dnsd.meta,
+    applets._dnsdomainname.meta,
+    applets._ftpget.meta,
+    applets._ftpput.meta,
+    applets._getty.meta,
+    applets._ifenslave.meta,
+    applets._ifplugd.meta,
+    applets._inetd.meta,
+    applets._ipaddr.meta,
+    applets._ipcalc.meta,
+    applets._ipcrm.meta,
+    applets._ipcs.meta,
+    applets._iplink.meta,
+    applets._ipneigh.meta,
+    applets._iproute.meta,
+    applets._iprule.meta,
+    applets._iptunnel.meta,
+    applets._lpd.meta,
+    applets._lpq.meta,
+    applets._lpr.meta,
+    applets._nameif.meta,
+    applets._nbd_client.meta,
+    applets._ping6.meta,
+    applets._popmaildir.meta,
+    applets._pscan.meta,
+    applets._rdate.meta,
+    applets._sendmail.meta,
+    applets._slattach.meta,
+    applets._ssl_client.meta,
+    applets._tcpsvd.meta,
+    applets._telnetd.meta,
+    applets._tftpd.meta,
+    applets._traceroute6.meta,
+    applets._udhcpc.meta,
+    applets._udhcpd.meta,
+    applets._udpsvd.meta,
+    applets._zcip.meta,
+    // --- Batch 6: Process/Signal ---
+    applets._killall.meta,
+    applets._killall5.meta,
+    applets._pkill.meta,
+    applets._powertop.meta,
+    applets._runlevel.meta,
+    applets._runsv.meta,
+    applets._runsvdir.meta,
+    applets._svc.meta,
+    applets._svlogd.meta,
+    applets._time.meta,
+    applets._usleep.meta,
+    applets._w.meta,
+    applets._watchdog.meta,
+    // --- Batch 6: Security/Auth ---
+    applets._add_shell.meta,
+    applets._chpasswd.meta,
+    applets._cryptpw.meta,
+    applets._delgroup.meta,
+    applets._deluser.meta,
+    applets._envuidgid.meta,
+    applets._mkpasswd.meta,
+    applets._remove_shell.meta,
+    applets._setpriv.meta,
+    applets._setserial.meta,
+    applets._setuidgid.meta,
+    applets._softlimit.meta,
+    applets._start_stop_daemon.meta,
+    applets._sulogin.meta,
+    // --- Batch 6: Display/Terminal ---
+    applets._beep.meta,
+    applets._chvt.meta,
+    applets._deallocvt.meta,
+    applets._dumpkmap.meta,
+    applets._fgconsole.meta,
+    applets._kbd_mode.meta,
+    applets._loadfont.meta,
+    applets._loadkmap.meta,
+    applets._openvt.meta,
+    applets._setconsole.meta,
+    applets._setfont.meta,
+    applets._setkeycodes.meta,
+    applets._setlogcons.meta,
+    applets._showkey.meta,
+    applets._ttysize.meta,
+    // --- Compression (WIP) ---
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {

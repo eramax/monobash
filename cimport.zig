@@ -38,4 +38,15 @@ pub const c = @cImport({
     @cInclude("net/if_arp.h");
     @cInclude("netinet/ip.h");
     @cInclude("netinet/ip_icmp.h");
+    @cInclude("crypt.h");
+    @cInclude("shadow.h");
+    @cInclude("syslog.h");
+    @cInclude("sys/shm.h");
+    @cInclude("sys/sem.h");
+    @cInclude("sys/msg.h");
+    @cInclude("sys/prctl.h");
+    @cInclude("limits.h");
+    @cInclude("linux/serial.h");
+    @cInclude("utmpx.h");
+    @cInclude("utmp.h");
 });

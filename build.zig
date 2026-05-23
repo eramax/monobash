@@ -16,5 +16,6 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
 
+    mod.linkSystemLibrary("crypt", .{});
     b.installArtifact(exe);
 }
