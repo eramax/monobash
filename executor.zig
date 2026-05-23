@@ -138,6 +138,20 @@ fn execNode(io: std.Io, node: NodeType, source: []const u8) u8 {
     // Fire DEBUG trap before command execution
     fireDebugTrap(io);
 
+    // Verbose mode: print each command to stderr before executing
+    if (var_store.verbose) {
+        const text = nodeText(node, source);
+        if (text.len > 0) {
+            _ = c.write(2, text.ptr, @as(usize, text.len));
+            _ = c.write(2, "\n", 1);
+        }
+    }
+
+    // Noexec mode: skip execution entirely
+    if (var_store.noexec) {
+        return 0;
+    }
+
     const status = execNodeInner(io, node, source);
     recordExitStatus(status);
     return status;
@@ -2325,13 +2339,25 @@ fn execFnDef(io: std.Io, node: NodeType, source: []const u8) u8 {
 fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
     var last: u8 = 0;
     var flags: u32 = 0;
-    var cmd_name: ?[]const u8 = null;
+    // Determine command name from the node's own text (first word)
+    const node_text = nodeText(node, source);
+    const first_space = std.mem.indexOfScalar(u8, node_text, ' ') orelse node_text.len;
+    const cmd_name: ?[]const u8 = first_word: {
+        const first_word_text = node_text[0..first_space];
+        const declare_keywords = comptime [_][]const u8{ "declare", "typeset", "local", "export", "readonly" };
+        inline for (declare_keywords) |kw| {
+            if (std.mem.eql(u8, first_word_text, kw)) {
+                break :first_word first_word_text;
+            }
+        }
+        break :first_word null;
+    };
     const count = parser.childCount(node);
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);
+        const raw = nodeText(child, source);
         if (std.mem.eql(u8, cname, "word")) {
-            const raw = nodeText(child, source);
             if (raw.len > 0 and raw[0] == '-') {
                 for (raw[1..]) |ch| {
                     switch (ch) {
@@ -2346,18 +2372,7 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
                 }
             }
         }
-        // Check if this is a declaration keyword (unnamed child)
-        if (cmd_name == null) {
-            const raw = nodeText(child, source);
-            const declare_keywords = comptime [_][]const u8{ "declare", "typeset", "local", "export", "readonly" };
-            inline for (declare_keywords) |kw| {
-                if (std.mem.eql(u8, raw, kw)) {
-                    cmd_name = raw;
-                }
-            }
-        }
     }
-    // When -i flag is set, process variable assignments with integer evaluation
     if (flags & 4 != 0) {
         for (0..count) |i| {
             const child = parser.childAt(node, i);
@@ -2383,20 +2398,15 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
         return 0;
     }
-    // If we have a declaration command name (declare/typeset/local/export/readonly),
-    // build the words list and run the builtin
     if (cmd_name) |name| {
         var words: std.ArrayListAligned([]const u8, null) = .empty;
         defer words.deinit(allocator);
-        // First add the command name itself
         words.append(allocator, allocator.dupe(u8, name) catch @panic("oom")) catch @panic("oom");
-        // Then add flags and assignments
         for (0..count) |i| {
             const child = parser.childAt(node, i);
             const cname = nodeName(child);
             const raw = nodeText(child, source);
             if (std.mem.eql(u8, cname, "word") or std.mem.eql(u8, cname, "variable_assignment")) {
-                // Skip if it's the name itself
                 if (std.mem.eql(u8, raw, name)) continue;
                 const dup = allocator.dupe(u8, raw) catch @panic("oom");
                 words.append(allocator, dup) catch @panic("oom");
@@ -2406,7 +2416,6 @@ fn execDeclaration(io: std.Io, node: NodeType, source: []const u8) u8 {
             return builtins.run(io, words.items[0], words.items);
         }
     }
-    // Fallback: process children individually
     for (0..count) |i| {
         const child = parser.childAt(node, i);
         const cname = nodeName(child);

@@ -633,6 +633,14 @@ fn builtinSet(io: std.Io, args: [][]const u8) u8 {
                     _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
                 }
             }
+        } else if (std.mem.eql(u8, arg, "-v")) {
+            var_store.verbose = true;
+        } else if (std.mem.eql(u8, arg, "+v")) {
+            var_store.verbose = false;
+        } else if (std.mem.eql(u8, arg, "-n")) {
+            var_store.noexec = true;
+        } else if (std.mem.eql(u8, arg, "+n")) {
+            var_store.noexec = false;
         } else if (std.mem.eql(u8, arg, "-x")) {
             var_store.xtrace = true;
         } else if (std.mem.eql(u8, arg, "+x")) {
@@ -690,59 +698,173 @@ fn builtinRead(io: std.Io, args: [][]const u8) u8 {
     if (args.len < 2) return 1;
 
     var var_start: usize = 1;
+    var silent = false;
+    var nchars: ?usize = null;
+    var timeout_ms: ?isize = null;
+    var delim: u8 = '\n';
+    var flag_err = false;
 
-    while (var_start < args.len and std.mem.startsWith(u8, args[var_start], "-")) {
-        if (std.mem.eql(u8, args[var_start], "-r")) {
-            // -r: raw mode - backslashes are literal (already our behavior)
-        } else if (std.mem.eql(u8, args[var_start], "--")) {
+    while (var_start < args.len) {
+        const arg = args[var_start];
+        if (!std.mem.startsWith(u8, arg, "-")) break;
+        if (std.mem.eql(u8, arg, "--")) {
             var_start += 1;
             break;
-        } else {
-            break;
         }
+        var i: usize = 1;
+        while (i < arg.len) : (i += 1) {
+            switch (arg[i]) {
+                'r' => {},
+                's' => silent = true,
+                'n' => {
+                    if (i + 1 < arg.len) {
+                        nchars = std.fmt.parseInt(usize, arg[i+1..], 10) catch {
+                            flag_err = true;
+                            break;
+                        };
+                        i = arg.len;
+                    } else if (var_start + 1 < args.len) {
+                        var_start += 1;
+                        nchars = std.fmt.parseInt(usize, args[var_start], 10) catch {
+                            flag_err = true;
+                            break;
+                        };
+                    } else {
+                        flag_err = true;
+                        break;
+                    }
+                },
+                't' => {
+                    if (i + 1 < arg.len) {
+                        const secs = std.fmt.parseFloat(f64, arg[i+1..]) catch {
+                            flag_err = true;
+                            break;
+                        };
+                        timeout_ms = @intFromFloat(secs * 1000.0);
+                        i = arg.len;
+                    } else if (var_start + 1 < args.len) {
+                        var_start += 1;
+                        const secs = std.fmt.parseFloat(f64, args[var_start]) catch {
+                            flag_err = true;
+                            break;
+                        };
+                        timeout_ms = @intFromFloat(secs * 1000.0);
+                    } else {
+                        flag_err = true;
+                        break;
+                    }
+                },
+                'd' => {
+                    if (i + 1 < arg.len) {
+                        const d = arg[i+1..];
+                        delim = if (d.len > 0) d[0] else 0;
+                        i = arg.len;
+                    } else if (var_start + 1 < args.len) {
+                        var_start += 1;
+                        const d = args[var_start];
+                        delim = if (d.len > 0) d[0] else 0;
+                    } else {
+                        flag_err = true;
+                        break;
+                    }
+                },
+                else => {
+                    flag_err = true;
+                    break;
+                },
+            }
+            if (flag_err) break;
+        }
+        if (flag_err) break;
         var_start += 1;
     }
-
+    if (flag_err) return 1;
     if (var_start >= args.len) return 1;
 
     var buf: [8192]u8 = undefined;
-    if (c.fgets(&buf, @as(c_int, @intCast(buf.len)), c.stdin)) |line_ptr| {
-        const raw = std.mem.sliceTo(line_ptr, 0);
-        var end = raw.len;
-        while (end > 0 and (raw[end - 1] == '\n' or raw[end - 1] == '\r')) {
-            end -= 1;
+    var pos: usize = 0;
+
+    const is_tty = c.isatty(0) != 0;
+    var orig: c.struct_termios = undefined;
+    if (silent and is_tty) {
+        if (c.tcgetattr(0, &orig) == 0) {
+            var no_echo = orig;
+            no_echo.c_lflag &= ~@as(c_uint, @intCast(c.ECHO));
+            _ = c.tcsetattr(0, c.TCSAFLUSH, &no_echo);
         }
-        const line = raw[0..end];
-        const ifs = if (var_store.get("IFS")) |v| v.value else " \t\n";
-        if (var_start == args.len - 1) {
-            _ = var_store.setLocal(args[var_start], line, false);
-            return 0;
+    }
+
+    var data_read = false;
+    var need_timeout = timeout_ms != null;
+    while (true) {
+        if (need_timeout) {
+            var pfd = [_]c.struct_pollfd{.{ .fd = 0, .events = c.POLLIN, .revents = 0 }};
+            const ret = c.poll(&pfd, 1, @as(c_int, @intCast(timeout_ms.?)));
+            if (ret <= 0) {
+                if (silent and is_tty) {
+                    _ = c.tcsetattr(0, c.TCSAFLUSH, &orig);
+                }
+                return 1;
+            }
+            need_timeout = false;
         }
-        var start: usize = 0;
-        var var_idx: usize = var_start;
-        while (var_idx < args.len) {
-            while (start < line.len and std.mem.indexOfScalar(u8, ifs, line[start]) != null) {
-                start += 1;
-            }
-            if (start >= line.len) {
-                _ = var_store.setLocal(args[var_idx], "", false);
-                var_idx += 1;
-                continue;
-            }
-            var word_end = start;
-            while (word_end < line.len and std.mem.indexOfScalar(u8, ifs, line[word_end]) == null) {
-                word_end += 1;
-            }
-            const word = line[start..word_end];
-            if (var_idx < args.len) {
-                _ = var_store.setLocal(args[var_idx], word, false);
-            }
-            var_idx += 1;
-            start = word_end;
+
+        var ch: u8 = undefined;
+        const n = c.read(0, &ch, 1);
+        if (n != 1) break;
+        data_read = true;
+
+        if (ch == delim or ch == '\n') break;
+
+        if (pos < buf.len) {
+            buf[pos] = ch;
+            pos += 1;
         }
+
+        if (nchars) |nc| {
+            if (pos >= nc) break;
+        }
+    }
+
+    if (silent and is_tty) {
+        _ = c.tcsetattr(0, c.TCSAFLUSH, &orig);
+    }
+
+    if (!data_read) return 1;
+
+    var line = buf[0..pos];
+    while (line.len > 0 and line[line.len - 1] == '\r') {
+        line = line[0 .. line.len - 1];
+    }
+
+    const ifs = if (var_store.get("IFS")) |v| v.value else " \t\n";
+    if (var_start == args.len - 1) {
+        _ = var_store.setLocal(args[var_start], line, false);
         return 0;
     }
-    return 1;
+    var start: usize = 0;
+    var var_idx: usize = var_start;
+    while (var_idx < args.len) {
+        while (start < line.len and std.mem.indexOfScalar(u8, ifs, line[start]) != null) {
+            start += 1;
+        }
+        if (start >= line.len) {
+            _ = var_store.setLocal(args[var_idx], "", false);
+            var_idx += 1;
+            continue;
+        }
+        var word_end = start;
+        while (word_end < line.len and std.mem.indexOfScalar(u8, ifs, line[word_end]) == null) {
+            word_end += 1;
+        }
+        const word = line[start..word_end];
+        if (var_idx < args.len) {
+            _ = var_store.setLocal(args[var_idx], word, false);
+        }
+        var_idx += 1;
+        start = word_end;
+    }
+    return 0;
 }
 
 fn builtinSource(io: std.Io, args: [][]const u8) u8 {
@@ -1149,7 +1271,8 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
         }
         return 0;
     }
-    // Support -a (array), -A (assoc array), -i (integer), -r (readonly), -x (export)
+    // Support -a (array), -A (assoc array), -i (integer), -r (readonly),
+    // -x (export), -n (nameref), -l (lowercase), -u (uppercase)
     var flags: u32 = 0;
     var var_start: usize = 1;
     while (var_start < args.len and args[var_start][0] == '-') {
@@ -1161,6 +1284,9 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
                 'r' => flags |= 8,
                 'x' => flags |= 16,
                 'p' => flags |= 32,
+                'n' => flags |= 64,
+                'l' => flags |= 128,
+                'u' => flags |= 256,
                 else => {},
             }
         }
@@ -1171,7 +1297,6 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
     if (flags & 32 != 0) {
         const stdout = std.Io.File.stdout();
         if (var_start >= args.len) {
-            // -p with no args: print all variables (like bare declare)
             for (var_store.allVars()) |v| {
                 var buf: [4096]u8 = undefined;
                 const attr = if (var_store.isReadonly(v.name)) "declare -r" else if (var_store.hasIntVar(v.name)) "declare -i" else "declare --";
@@ -1196,16 +1321,35 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             const name = arg[0..eq];
             var val = arg[eq+1..];
             if (flags & 4 != 0 and val.len > 0) {
-                // For -i flag, evaluate as arithmetic expression
                 if (builtinLetEvalArithmetic(val)) |v| {
                     var vbuf: [64]u8 = undefined;
                     val = std.fmt.bufPrint(&vbuf, "{d}", .{v}) catch val;
                 }
             }
-            if (flags & 16 != 0) {
-                _ = var_store.set(name, val, true);
+            // Handle -l (lowercase) and -u (uppercase) on initial assignment
+            if (flags & 128 != 0) {
+                var lbuf: [4096]u8 = undefined;
+                if (val.len <= lbuf.len) {
+                    for (val, 0..) |ch, i| lbuf[i] = std.ascii.toLower(ch);
+                    val = var_store.getAllocator().dupe(u8, lbuf[0..val.len]) catch val;
+                }
+            }
+            if (flags & 256 != 0) {
+                var ubuf: [4096]u8 = undefined;
+                if (val.len <= ubuf.len) {
+                    for (val, 0..) |ch, i| ubuf[i] = std.ascii.toUpper(ch);
+                    val = var_store.getAllocator().dupe(u8, ubuf[0..val.len]) catch val;
+                }
+            }
+            // -n (nameref): set reference instead of value
+            if (flags & 64 != 0) {
+                var_store.setNameref(name, val);
             } else {
-                _ = var_store.set(name, val, false);
+                if (flags & 16 != 0) {
+                    _ = var_store.set(name, val, true);
+                } else {
+                    _ = var_store.set(name, val, false);
+                }
             }
             if (flags & 8 != 0) {
                 var_store.setReadonly(name, true);
@@ -1213,7 +1357,21 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             if (flags & 4 != 0) {
                 var_store.setIntVar(name, true);
             }
+            // Store -l/-u attributes in VarValue
+            if (flags & 128 != 0) {
+                const new_attrs = var_store.getAttributes(name) | var_store.ATTR_LCASE;
+                var_store.setAttributes(name, new_attrs);
+            }
+            if (flags & 256 != 0) {
+                const new_attrs = var_store.getAttributes(name) | var_store.ATTR_UCASE;
+                var_store.setAttributes(name, new_attrs);
+            }
         } else {
+            if (flags & 64 != 0) {
+                // declare -n ref without value just sets up the nameref name with no target
+                // Create the variable if it doesn't exist
+                _ = var_store.set(arg, "", false);
+            }
             if (flags & 16 != 0) {
                 var_store.setExport(arg, true);
             }
@@ -1222,6 +1380,14 @@ fn builtinDeclare(io: std.Io, args: [][]const u8) u8 {
             }
             if (flags & 4 != 0) {
                 var_store.setIntVar(arg, true);
+            }
+            if (flags & 128 != 0) {
+                const new_attrs = var_store.getAttributes(arg) | var_store.ATTR_LCASE;
+                var_store.setAttributes(arg, new_attrs);
+            }
+            if (flags & 256 != 0) {
+                const new_attrs = var_store.getAttributes(arg) | var_store.ATTR_UCASE;
+                var_store.setAttributes(arg, new_attrs);
             }
         }
     }

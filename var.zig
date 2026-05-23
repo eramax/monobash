@@ -1,8 +1,17 @@
 const std = @import("std");
+const c = @import("cimport.zig").c;
+
+pub const ATTR_LCASE = 1;
+pub const ATTR_UCASE = 2;
+pub const ATTR_NAMEREF = 4;
+pub const ATTR_INTEGER = 8;
+pub const ATTR_READONLY = 16;
+pub const ATTR_ARRAY = 32;
 
 pub const VarValue = struct {
     value: []const u8,
     exported: bool,
+    attributes: u8,
 };
 
 pub const Scope = struct {
@@ -72,6 +81,7 @@ pub fn init(allocator: std.mem.Allocator) void {
     };
     positional_params = std.ArrayListAligned([]const u8, null).empty;
     alias_table = std.StringHashMap([]const u8).init(arena);
+    nameref_table = std.StringHashMap([]const u8).init(arena);
     dir_stack = std.ArrayListAligned([]const u8, null).empty;
     readonly_set = std.StringHashMap(void).init(arena);
     int_vars = std.StringHashMap(void).init(arena);
@@ -99,6 +109,7 @@ pub fn init(allocator: std.mem.Allocator) void {
 
     // Bash compatibility variables
     _ = set("BASH_VERSION", "5.2.37(1)-monobash", false);
+    _ = set("BASH_COMPAT", "5.2", false);
     _ = set("SECONDS", "0", false);
 
     // RANDOM — generate a random value 0-32767
@@ -217,24 +228,39 @@ extern "c" fn time(timer: ?*i64) i64;
 
 pub fn set(name: []const u8, value: []const u8, exported: bool) bool {
     if (isReadonly(name)) return false;
+    var attrs: u8 = 0;
     var s: ?*Scope = global_scope;
     while (s) |scope| {
+        if (scope.vars.get(name)) |v| {
+            attrs = v.attributes;
+            break;
+        }
+        s = scope.parent;
+    }
+    const final_value = applyAttributes(value, attrs);
+    s = global_scope;
+    while (s) |scope| {
         if (scope.vars.get(name)) |_| {
-            scope.vars.put(name, .{ .value = allocValue(value), .exported = exported }) catch {};
-            exportVar(name, value);
+            scope.vars.put(name, .{ .value = final_value, .exported = exported, .attributes = attrs }) catch {};
+            exportVar(name, final_value);
             return true;
         }
         s = scope.parent;
     }
-    global_scope.vars.put(allocValue(name), .{ .value = allocValue(value), .exported = exported }) catch {};
-    exportVar(name, value);
+    global_scope.vars.put(allocValue(name), .{ .value = final_value, .exported = exported, .attributes = attrs }) catch {};
+    exportVar(name, final_value);
     return true;
 }
 
 pub fn setLocal(name: []const u8, value: []const u8, exported: bool) bool {
     if (isReadonly(name)) return false;
-    global_scope.vars.put(allocValue(name), .{ .value = allocValue(value), .exported = exported }) catch {};
-    exportVar(name, value);
+    var attrs: u8 = 0;
+    if (global_scope.vars.get(name)) |v| {
+        attrs = v.attributes;
+    }
+    const final_value = applyAttributes(value, attrs);
+    global_scope.vars.put(allocValue(name), .{ .value = final_value, .exported = exported, .attributes = attrs }) catch {};
+    exportVar(name, final_value);
     return true;
 }
 
@@ -250,9 +276,30 @@ fn exportVar(name: []const u8, value: []const u8) void {
 }
 
 pub fn get(name: []const u8) ?VarValue {
+    // EPOCHREALTIME is dynamic — compute on each read
+    if (std.mem.eql(u8, name, "EPOCHREALTIME")) {
+        var ts: c.struct_timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK_REALTIME, &ts);
+        var buf: [64]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "{d}.{d:0>6}", .{
+            ts.tv_sec,
+            @divFloor(@as(u64, @intCast(ts.tv_nsec)), 1000),
+        }) catch "0";
+        return VarValue{ .value = allocValue(s), .exported = false, .attributes = 0 };
+    }
+    // Resolve namerefs (with loop limit for safety)
+    var resolved = name;
+    var depth: usize = 0;
+    while (depth < 64) : (depth += 1) {
+        if (nameref_table.get(resolved)) |target| {
+            resolved = target;
+        } else {
+            break;
+        }
+    }
     var s: ?*Scope = global_scope;
     while (s) |scope| {
-        if (scope.vars.get(name)) |v| return v;
+        if (scope.vars.get(resolved)) |v| return v;
         s = scope.parent;
     }
     return null;
@@ -434,6 +481,9 @@ var readonly_set: std.StringHashMap(void) = undefined;
 // Integer attribute tracking (declare -i)
 var int_vars: std.StringHashMap(void) = undefined;
 
+// Nameref tracking (declare -n)
+pub var nameref_table: std.StringHashMap([]const u8) = undefined;
+
 pub fn setReadonly(name: []const u8, val: bool) void {
     if (val) {
         readonly_set.put(allocValue(name), {}) catch {};
@@ -456,6 +506,56 @@ pub fn setIntVar(name: []const u8, val: bool) void {
 
 pub fn hasIntVar(name: []const u8) bool {
     return int_vars.contains(name);
+}
+
+pub fn setAttributes(name: []const u8, attrs: u8) void {
+    var s: ?*Scope = global_scope;
+    while (s) |scope| {
+        if (scope.vars.get(name)) |v| {
+            scope.vars.put(name, .{ .value = v.value, .exported = v.exported, .attributes = attrs }) catch {};
+            return;
+        }
+        s = scope.parent;
+    }
+}
+
+pub fn getAttributes(name: []const u8) u8 {
+    var s: ?*Scope = global_scope;
+    while (s) |scope| {
+        if (scope.vars.get(name)) |v| {
+            return v.attributes;
+        }
+        s = scope.parent;
+    }
+    return 0;
+}
+
+pub fn setNameref(name: []const u8, target: []const u8) void {
+    nameref_table.put(allocValue(name), allocValue(target)) catch {};
+}
+
+pub fn getNameref(name: []const u8) ?[]const u8 {
+    return nameref_table.get(name);
+}
+
+fn applyAttributes(value: []const u8, attrs: u8) []const u8 {
+    if (attrs & ATTR_LCASE != 0) {
+        var buf: [4096]u8 = undefined;
+        if (value.len > buf.len) return allocValue(value);
+        for (value, 0..) |ch, i| {
+            buf[i] = std.ascii.toLower(ch);
+        }
+        return allocValue(buf[0..value.len]);
+    }
+    if (attrs & ATTR_UCASE != 0) {
+        var buf: [4096]u8 = undefined;
+        if (value.len > buf.len) return allocValue(value);
+        for (value, 0..) |ch, i| {
+            buf[i] = std.ascii.toUpper(ch);
+        }
+        return allocValue(buf[0..value.len]);
+    }
+    return allocValue(value);
 }
 
 // Iterator support for listing all variables
@@ -516,8 +616,8 @@ pub fn getLinenoStack() []const usize {
     return lineno_stack.items;
 }
 
-pub fn getSpecial(c: u8) []const u8 {
-    switch (c) {
+pub fn getSpecial(ch: u8) []const u8 {
+    switch (ch) {
         '?' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{exit_status}) catch "0",
         '!' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{last_bg_pid}) catch "0",
         '$' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{@as(c_int, getpid())}) catch "0",
@@ -560,8 +660,8 @@ pub fn getSpecial(c: u8) []const u8 {
         },
         else => {
             // Check positional params: '1'..'9' map to params[0]..params[8]
-            if (c >= '1' and c <= '9') {
-                const idx = c - '1';
+            if (ch >= '1' and ch <= '9') {
+                const idx = ch - '1';
                 if (idx < positional_params.items.len) {
                     return positional_params.items[idx];
                 }

@@ -706,6 +706,32 @@ fn expandPositional(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
                     i = end;
                     continue;
                 }
+                if (std.mem.eql(u8, vname, "EPOCHREALTIME")) {
+                    if (var_store.get("EPOCHREALTIME")) |v| {
+                        for (v.value) |ch| {
+                            if (ch == '\\') {
+                                try result.appendSlice(allocator, "\\\\");
+                            } else {
+                                try result.append(allocator, ch);
+                            }
+                        }
+                    }
+                    i = end;
+                    continue;
+                }
+                // For all other named variables, try resolving through var_store
+                if (var_store.get(vname)) |v| {
+                    // Escape backslashes so wordexp doesn't consume them
+                    for (v.value) |ch| {
+                        if (ch == '\\') {
+                            try result.appendSlice(allocator, "\\\\");
+                        } else {
+                            try result.append(allocator, ch);
+                        }
+                    }
+                    i = end;
+                    continue;
+                }
             }
         }
         result.appendAssumeCapacity(raw[i]);
