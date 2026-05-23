@@ -1,233 +1,143 @@
 # monobash — Session Summary
 
 ## Goal
-Implement all missing bash features to make monobash a complete bash replacement.
+Make monobash a complete bash replacement by:
+1. Implement all missing shell features (arrays, brace expansion, etc.)
+2. Pass busybox test suite at >80% for all registered NOEXEC applets
+3. Port all 296 applets to NOEXEC Zig (230 registered, 66 remaining)
 
-## Repository Structure
-```
-/mnt/mydata/projects2/0/monobash/   ← git repo, main branch
-  ├── main.zig, builtins.zig, ...    ← monobash source
-  ├── executor.zig                   ← main execution engine (1364+ lines)
-  ├── var.zig                        ← variable storage, shell options, jobs
-  ├── parser.zig                     ← tree-sitter wrapper
-  ├── expand.zig                     ← word expansion
-  ├── job.zig                        ← job control stubs
-  ├── applets.zig                    ← NOEXEC applets (stub table)
-  ├── tree-sitter/                   ← bundled tree-sitter library
-  ├── tree-sitter-bash/              ← bash grammar
-  ├── tests/
-  │   ├── bash_compat_test.sh        ← 537-test compatibility suite
-  │   └── full.sh                    ← full test runner
-  ├── build.zig                      ← standalone build
-  ├── SESSION.md                     ← this file
-  └── deps/coreutils/                ← submodule (v9.11-53-g2f865e275)
-```
+## Current Status
+**Busybox test suite: 533/901 passing (59.2%)** — up from 182/887 (20.5%)
 
-## What's Done
-### Test fixes
-- Fixed 7 failing tests: backslash-newline line continuation, BASH_SUBSHELL, BASHPID, select keyword, trap EXIT (×2), set -e errexit
-- Added shell option flags (`errexit`, `nounset`, `pipefail`) in `var.zig`
-- Added `reserved_words` recognition in `builtinType` (makes `type select` pass)
-- Added `set -e`, `set -u`, `set -o pipefail` handling in `builtinSet`
-- Added `read -r` flag skipping in `builtinRead`
-- Added EXIT trap storage and firing in `builtinTrap` / `executor.exec()`
-- Added BASH_SUBSHELL increment and BASHPID update in `execSubshell`
-- Added errexit abort in `execProgram` and `execList`
-- Added pipefail (rightmost non-zero) in `execPipeline`
-- All 537 tests pass
+## Infrastructure Changes
 
-### Infrastructure
-- Added C-style for loop (`c_style_for_statement` handler with `evalArithmetic`)
-- Added heredoc/herestring redirect support (pipe content to child stdin)
-- Added C argv building in `applets.run` (forks and calls `entry.mainFn`)
-- Added `childByFieldName`, `childCountByFieldName`, `childrenByFieldName` to `parser.zig`
-- Added `builtinSet` variable listing (no-arg mode)
-- Added `builtinTrap` handler listing
-- Added basic `runPipeline` in `job.zig`
-- Removed all 4 remaining TODO/stub markers from source
-- Created standalone git repo for monobash with initial commit
+### Busybox-style symlink dispatch (`main.zig`)
+- When argv[0] isn't "monobash"/"bash"/"sh", look up the applet by name and dispatch
+- Also handles `busybox <applet> [args...]` pattern (argv[0]="busybox", argv[1]=applet)
+- Rebuilds argv properly for the applet (strips "busybox" prefix, uses basename for symlinks)
+- Init io_uring and counters before dispatch
 
-### Job control
-- Added `wait`, `jobs`, `bg`, `fg`, `disown` builtins
-- Use C `waitpid()` via extern for `wait` builtin
-- Use `SIGCONT` (signal 18) for `bg`/`fg` resume
-- Added `sys/wait.h` to builtins.zig's `cImport` block
+### Build system
+- `Makefile` — targets: `release` / `debug` / `pod` (glibc 2.39 for Ubuntu 24.04) / `clean`
+- `tests/Makefile` — targets: `shell` / `applet` / `compat` / `bash-compat` / `busybox-pod` / `pod-setup`
 
-### Builtins added
-- `alias`/`unalias` — stores in hashmap in var.zig
-- `bind` — stub
-- `caller` — returns 1 (non-interactive)
-- `command` — supports -v, -V, runs external
-- `compgen`/`complete` — stubs
-- `declare`/`typeset` — supports -a, -A, -i, -r, -x
-- `dirs`/`pushd`/`popd` — directory stack
-- `enable` — stub
-- `fc` — stub
-- `getopts` — stub
-- `hash` — basic stub
-- `help` — minimal
-- `history` — no-op
-- `let` — basic arithmetic eval
-- `logout` — no-op
-- `mapfile`/`readarray` — stub
-- `readonly` — supports listing and setting
-- `shopt` — no-op
-- `suspend` — no-op
-- `ulimit` — no-op
-- `umask` — prints/sets stub
+### Test infrastructure
+- `ci/run-busybox-tests.sh` — runs busybox testsuite for 80+ supported applets in K8s pod
+- Runner creates symlinks to monobash in `/tmp/monobash-links/` for each applet + busybox
+- Builds OPTIONFLAGS with all feature flags to prevent test skipping
+- Runs new-style `.tests` files and old-style per-applet test scripts
+- Uses K8s pod (`monobash-tester`, ubuntu:24.04) for test isolation — never runs on host
 
-### Variable infrastructure added to var.zig
-- `getAliases` / `setAlias` / `removeAlias` / `getAlias`
-- `getDirStack` / `pushDir` / `popDir`
-- `setReadonly` / `isReadonly`
-- `allVars()` — iterate all variables across scopes
-- `setExport` — set exported flag
-- `getAllocator` — expose arena allocator
+### Pod deployment
+- Binary built for `x86_64-linux-gnu.2.39` (Ubuntu 24.04 glibc)
+- `kubectl cp` to copy binary, testsuite, and runner to pod
+- Tests run via `kubectl exec`
 
-### AST features
-- `(( ))` arithmetic command — expression evaluation via `evalArithmetic` (wraps in `$((...))`)
-- `select` loop — detects via first unnamed child "select" keyword, presents non-interactive menu
+## Applet Fixes (by batch)
 
-### Restructuring
-- Extracted monobash from coreutils src tree
-- coreutils removed from its own src (was untracked)
-- coreutils added as submodule at `deps/coreutils/`
-- monobash is now a standalone git repo with 2 commits
+Each batch was dispatched as a subagent, one at a time. All applets are NOEXEC (fork+exec), use `core.writeAll` for I/O.
 
-## Test Status
-### Compatibility suite (bash_compat_test.sh)
-```
-Total  : 537
-Passed : 537
-Failed : 0
-Skipped: 0
-🎉  ALL 537 TESTS PASSED!
-```
+### Batch 1: echo (11/11)
+- Multi-flag args (`-e -n`, `-ne`)
+- Validate all flag chars before applying side effects (`-neEZ` → literal)
+- Octal/hex escapes, `\0`, `\c` suppress, `\n`/`\t`/`\r`
 
-### Bash comparison suite (tests/compare.sh — 241 tests across 17 categories)
-```
-Total  : 241
-Passed : 167
-Failed : 74  (gaps vs bash)
-Coverage: 69%
-Note: 3+ categories hang due to multi-line test parsing issues
-```
-See Gap Analysis section below for detailed breakdown by category.
+### Batch 2: basename (2/2), dirname (7/7), head (3/3)
+- basename: skip suffix removal when result would be empty
+- dirname: match musl behavior (empty→`.`, trailing slashes, `///`→`/`)
+- head: support negative -n values (print all but last N lines)
 
-## Gap Analysis (bash vs monobash comparison suite)
+### Batch 3: rev (4/4), sum (3/3), md5sum (1/1)
+- rev: NUL truncation, missing-newline handling
+- sum: BSD (-r) and SysV (-s) checksum flags
+- md5sum: -c check mode
+- **core.zig fix**: readAll loops on partial io_uring reads (pipe fix)
 
-The comparison suite (`tests/compare.sh`) runs 302 tests across 20 categories against both bash and monobash, then reports gaps. Current results: **183/302 pass (61%)**.
+### Batch 4: unexpand (23/23), seq (25/25), uniq (14/14)
+- unexpand: -f/--first-only, -tN tabstop parsing
+- seq: -s separator, -w width, negative numbers, float precision
+- uniq: -f skip-fields, -s skip-chars, -w compare-max, -u unique, two-file support
 
-### Per-Category Coverage
+### Batch 5: cut (14/14 + old), comm (8/8), factor (13/13), cpio (9/9)
+- cut: -b bytes, -s suppress, -D/-F regex, `-` as stdin
+- comm: `-` as option terminator
+- factor: Miller-Rabin + Pollard Rho prime factorization
+- cpio: -H format, -p pass-through, -R owner, -v verbose
 
-| Category | Passed | Failed | Total | Coverage |
-|----------|--------|--------|-------|----------|
-| 00-quoting | 21 | 2 | 23 | 91% |
-| 01-tokens | 14 | 0 | 14 | **100%** |
-| 02-variables | 18 | 7 | 25 | 72% |
-| 03-parameter-expansion | 17 | 9 | 26 | 65% |
-| 04-arrays | 0 | 14 | 14 | 0% |
-| 05-redirection | 5 | 5 | 10 | 50% |
-| 06-pipelines | 11 | 2 | 13 | 85% |
-| 07-control-flow | 4 | 14 | 18 | 22% |
-| 08-builtins | 27 | 10 | 37 | 73% |
-| 09-job-control | 8 | 2 | 10 | 80% |
-| 10-functions | 6 | 6 | 12 | 50% |
-| 11-command-substitution | 8 | 0 | 8 | **100%** |
-| 12-arithmetic | 6 | 9 | 15 | 40% |
-| 13-error-handling | 7 | 6 | 13 | 54% |
-| 14-brace-expansion | 0 | 10 | 10 | 0% |
-| 15-pattern-matching | 2 | 10 | 12 | 17% |
-| 16-string-manipulation | 8 | 0 | 8 | **100%** |
-| 17-declare-typeset | 7 | 3 | 10 | 70% |
-| 18-environment-vars | 4 | 8 | 12 | 33% |
-| 19-edge-cases | 10 | 2 | 12 | 83% |
+### Batch 6: grep (51/51), sort (21/26), printf (24/24), test (17/17)
+- **grep**: -q, -F, -x, -w, -o, -E, -c, -r/-R, -m, -l/-L, -s, multiple -e, -f FILE, recursive traversal
+- **sort**: -k key parsing, -t separator, -h/-M/-V comparators, -o, -z, -s, -u with keys
+- **printf**: full implementation from scratch — all format specifiers, escapes, width/precision, flags
+- **test**: rewrite expression parser with -a/-o precedence, grouping, string comparison
 
-### Recent Fixes
+### Batch 7: diff (18/18), patch (11/11), cp (27/30), tar (~5/9)
+- diff: full unified diff with LCS, -u/-b/-B/-q/-r/-N
+- patch: complete application with -R/-N/-pN/-i
+- cp: -a/-d/-P/-H/-L/-i/-v/-l/-s/--parents, symlink policy
+- tar: basic create/extract/list, empty/zeroed block handling
 
-1. **`$?` exit status tracking** — added `recordExitStatus()` wrapper around `execNode` so `$?` is updated after every command
-2. **`set -- a b c`** — `builtinSet` now handles `--` separator and sets positional parameters
-3. **Variable assignments in simple commands** — `execSimpleCommand` processes `variable_assignment` children first (fixes standalone `x=2`)
-4. **echo -n flag** — suppresses trailing newline
-5. **printf argument cycling** — format string reuses cyclically for all remaining arguments
-6. **AND/OR short-circuit** — `execList` checks for `&&`/`||` operators and short-circuits
-7. **`$-` expansion** — added to `expandPositional`'s special var handling
-8. **Expansion error propagation** — `UndefinedVar` errors from `${var:?}` return exit code 127
-9. **Readonly enforcement** — `set()`/`setLocal()` check `isReadonly()` before overwriting
-10. **unset C environment cleanup** — `unset()` calls `unsetenv()` to sync C env
-11. **return value parsing** — `return N` sets `$?` to N
-12. **Background operator** — `&` background execution with job tracking
-13. **`$x` expansion in `[...]` tests** — `test_command` nodes now expand variables via `expandToken` (was using raw `nodeText`)
-14. **Arithmetic preprocessor** — `$(( ))` expressions with variables preprocessed before `wordexp` using a recursive-descent integer evaluator
-15. **`evalArithmetic` refactored** — calls `evalArithmeticFromStr` directly instead of wrapping in `$((` and calling `wordexp`
-16. **Backslash-newline continuation** — merged adjacent word tokens when separated by `\<newline>`
-17. **ANSIC-C quoting** — `$'...'` escape processing in mixed tokens
-18. **`$-` dynamic** — reflects actual shell state (errexit, nounset, etc.)
-19. **cd error message** — matches bash format
-20. **alias/unalias** — proper error messages on failure
-21. **kill -l** — signal name listing
-22. **dirs/pushd/popd** — actually change directory
-23. **shopt** — basic `-s`/`-u`/list support
-24. **`;;` syntax error** — properly detected
-25. **Shell environment variables** — BASH_VERSION, SECONDS, RANDOM, UID, EUID, HOSTNAME, SHLVL, LINENO, PPID, EPOCHSECONDS
-26. **PATH inheritance** — inherits from parent environment instead of hardcoded
-27. **! pipeline negation** — fixed child selection (was picking `!` token as the command)
-28. **Exit code 127** — `execCommand` propagates failure status
-29. **2>&1 redirect** — rewritten `parseFileRedirect` with flexible FD parsing
-30. **Herestrings** — appends newline after content
-31. **Arithmetic `(( i = 5 ))`** — parses assignments from expression, evaluates RHS, stores in variable
-32. **let builtin** — full rewrite handling `+=`, `++`, `--`, pre/post increment
-33. **declare -i** — evaluates arithmetic expressions before storing
+### Batch 8: sed (37/59)
+- Address expressions (numeric, regex, step, negation, $)
+- Commands: d, p, P, q, a, i, c, =, N, n, {}, y///, w, r
+- s/// with g/p/w/I/NUM flags
+- Branching: :label, b, t, T
+- CLI: -e, -f, -n, -r, --version
 
-### Priority Areas (sorted by gap impact)
+### Batch 9: awk (50/78)
+- Complete awk interpreter from scratch (2792 lines)
+- Recursive-descent parser, expression evaluator, field variables
+- 28 built-in functions, arrays, functions, BEGIN/END blocks
+- -F/-f/-e/-v flags, print/printf with redirects
 
-#### Remaining bugs
-1. **Check for loops with brace expansion** — depends on brace expansion feature
-2. **select loop** — non-interactive handling needs improvement
-3. **heredoc/herestring corruption** — some edge cases cause massive output concatenation
-4. **05-redirection tests** — only runs 3/10 due to hanging tests
-5. **08-builtins** — some builtins still failing (hash, getopts)
+### Batch 10: bc (3/66 — partial), dc (17/36)
+- dc: arbitrary-precision decimal engine, stack ops, registers, macros, conditionals
+- bc: improved stub with basic arithmetic (needs full parser rewrite)
 
-#### Missing feature categories (larger effort)
-6. **Arrays** — full indexed array support (`a=(1 2 3)`, `${a[@]}`, `${#a[@]}`, `a+=(4)`)
-7. **Brace expansion** — `{a,b,c}`, `{1..5}`, `{a..e}` completely absent
-8. **Parameter expansion operators** — `${var:offset}`, `${var/pat/repl}`, `${!indirect}`, `${!prefix*}`
-9. **Associative arrays** — `declare -A`, key-value storage
-10. **Case pattern matching** — glob patterns (`*`, `?`, `[abc]`) not matching in case statements
+### Batch 11: uuencode (19/19), xxd (7/7) — **new applets created**
+- uuencode: standard and base64 encoding, created from scratch
+- xxd: hex dump with -p plain, -r reverse, created from scratch
+- Both registered in applets.zig
 
-#### Environment/stub improvements
-11. **$- flags** — `hBc` should be more comprehensive
-12. **kill -l on specific signals** — `kill -l SIGTERM` not implemented
-13. **shopt** — more options needed
-14. **hash, getopts, fc, complete, compgen** — stubs
-15. **Process substitution** — `<(...)` `>(...)` not supported
+### Batch 12: xargs (10/11), nl (3/3), fold (3/3), readlink (6/6), realpath (10/10), touch (3/3), tree (4/4), cal (1/1), pidof (3/4), hexdump (1/6), od (~partial)
+- Various small applet fixes and rewrites
+- pidof registered in applets.zig (was missing)
 
-### Comparison Test Infrastructure
+## Remaining Work (~368 failures to reach 80%)
 
-- **Runner**: `tests/compare.sh` — reads `tests/compat/*.tests` files, runs each command against both bash and monobash, compares stdout/stderr/exit code
-- **Test files**: 20 files in `tests/compat/` covering all major feature categories (302 total tests)
-- **Gap report**: `tests/compare.sh --report` generates `tests/compat/GAP_REPORT.md` with detailed per-test failure info
-- **Usage**: `SHELL=./zig-out/bin/monobash bash tests/compare.sh`
+### Hard (need full parser/engine rewrites):
+- **bc**: 57 failures — needs recursive-descent parser with control flow, functions, math library
+- **awk**: 27 failures — edge cases (getline, backslash-newline, gensub backslashes)
+- **sed**: 22 failures — edge cases (-i in-place, -e combined, \U/\L case conv)
+- **dc**: 19 failures — edge cases (precision, string escapes)
+
+### Moderate:
+- **tar**: ~12 failures plus old-style — needs -z gzip, proper archive format
+- **cp**: 3 failures — missing SKIP_KNOWN_BUGS guarded features
+- **sort**: 5 failures — reverse-with-keys, -b blanks, -sr stable ordering
+- **od**: ~8 failures — format alignment
+- **hexdump**: 5 failures — -e format support
+- **xargs**: 1 failure — quote support
+
+### Small (~33 total):
+- nl, fold, readlink, realpath, touch, tree, cal, pidof — mostly fixed
 
 ## Key Decisions
-- Use C `waitpid()` via extern for `wait` builtin rather than wrapping std.posix
-- Use `SIGCONT` (signal 18) for `bg`/`fg` resume since signal names not available without libc signal.h
-- Add `fork`, `execvp` via `unistd.h` in builtins.zig's `cImport` block for `runExternalCommand`
-- Store aliases in separate `StringHashMap` in var.zig (not part of variable scope)
-- Arrays deferred — require significant infrastructure changes
-- `select` loop uses non-interactive fallback (assigns first word, executes body once)
-- `(( ))` arithmetic command detected by checking first child text starts with `"(("`
-- Struct extracted as standalone git repo; coreutils kept as submodule
+- Subagents dispatched one at a time (not parallel) per user request
+- Each subagent reads source + test file, fixes, rebuilds, verifies
+- Tests run in K8s pod, never on host machine
+- Binary built for glibc 2.39 (Ubuntu 24.04 in pod)
+- Applets are NOEXEC — fork+exec, each child re-inits io_uring
+- `core.zig` modifications allowed only when necessary (readAll pipe fix)
+- New applets registered in `applets.zig` with `const` import + `all_metas` entry
+- Do NOT modify main.zig, build.zig except when adding symlink dispatch or build infra
 
 ## Relevant Files
-- `builtins.zig` — builtin table (line 16+), all handler implementations
-- `executor.zig` — execCompound (line 861), execArithmeticCmd (line 878), execFor (line 364), evalArithmetic (line 440), detectSelect (line 361)
-- `var.zig` — variable store, aliases, dir stack, readonly, jobs, shell options
-- `job.zig` — runPipeline, runBackground stubs
-- `applets.zig` — C argv builder (empty applet table for now)
-- `parser.zig` — tree-sitter wrapper (childByFieldName, etc.)
-- `tests/bash_compat_test.sh` — 537-test suite
-- `tests/compare.sh` — bash comparison test runner (302 tests across 20 categories)
-- `tests/compat/*.tests` — 20 comparison test definition files
-- `tests/compat/GAP_REPORT.md` — auto-generated gap analysis report
-- `deps/coreutils` — coreutils submodule
+- `main.zig` — symlink dispatch (busybox/compat mode)
+- `applets.zig` — applet registry (230 registered)
+- `applets/core.zig` — shared I/O (readAll, writeAll), io_uring, counters
+- `applets/*.zig` — individual NOEXEC applets
+- `ci/run-busybox-tests.sh` — busybox test runner for K8s pod
+- `ci/test-pod.yaml` — K8s pod spec
+- `Makefile` — build targets
+- `tests/Makefile` — test targets
+- `deps/busybox/testsuite/` — vendored busybox test suite
