@@ -14,6 +14,18 @@ pub fn main(args: [][]const u8) u8 {
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
         if (std.mem.eql(u8, args[i], "--")) { i += 1; break; }
         const arg = args[i];
+        if (arg.len == 2 and arg[1] >= '1' and arg[1] <= '9') {
+            c_mode = false;
+            n = arg[1] - '0';
+            i += 1;
+            continue;
+        }
+        if (arg.len > 2 and arg[1] >= '1' and arg[1] <= '9') {
+            c_mode = false;
+            n = parseNum(arg[1..]) orelse return core.die(1, "head: invalid number: {s}\n", .{arg});
+            i += 1;
+            continue;
+        }
         if (arg.len > 2 and arg[1] == 'n') {
             c_mode = false;
             n = parseNum(arg[2..]) orelse return core.die(1, "head: invalid number: {s}\n", .{arg});

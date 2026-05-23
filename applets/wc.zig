@@ -113,24 +113,26 @@ fn countWords(data: []const u8) usize {
 fn printCounts(lines: usize, words: usize, chars: usize, show_l: bool, show_w: bool, show_c: bool, name: []const u8) void {
     var buf: [4096]u8 = undefined;
     var pos: usize = 0;
+    var idx: u8 = 0;
+    const use_pad = (show_l and show_w and show_c) or name.len > 0;
+
     if (show_l) {
-        const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{lines}) catch "";
-        pos += s.len;
+        if (use_pad) { const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{lines}) catch ""; pos += s.len; }
+        else if (idx == 0) { const s = std.fmt.bufPrint(buf[pos..], "{d}", .{lines}) catch ""; pos += s.len; idx += 1; }
+        else { const s = std.fmt.bufPrint(buf[pos..], " {d}", .{lines}) catch ""; pos += s.len; idx += 1; }
     }
     if (show_w) {
-        const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{words}) catch "";
-        pos += s.len;
+        if (use_pad) { const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{words}) catch ""; pos += s.len; }
+        else if (idx == 0) { const s = std.fmt.bufPrint(buf[pos..], "{d}", .{words}) catch ""; pos += s.len; idx += 1; }
+        else { const s = std.fmt.bufPrint(buf[pos..], " {d}", .{words}) catch ""; pos += s.len; idx += 1; }
     }
     if (show_c) {
-        const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{chars}) catch "";
-        pos += s.len;
+        if (use_pad) { const s = std.fmt.bufPrint(buf[pos..], "{d:>7} ", .{chars}) catch ""; pos += s.len; }
+        else if (idx == 0) { const s = std.fmt.bufPrint(buf[pos..], "{d}", .{chars}) catch ""; pos += s.len; idx += 1; }
+        else { const s = std.fmt.bufPrint(buf[pos..], " {d}", .{chars}) catch ""; pos += s.len; idx += 1; }
     }
     if (name.len > 0) {
-        const s = std.fmt.bufPrint(buf[pos..], "{s}\n", .{name}) catch "";
-        pos += s.len;
-    } else {
-        buf[pos] = '\n';
-        pos += 1;
-    }
+        const s = std.fmt.bufPrint(buf[pos..], " {s}\n", .{name}) catch ""; pos += s.len;
+    } else { buf[pos] = '\n'; pos += 1; }
     core.writeAll(1, buf[0..pos]);
 }
