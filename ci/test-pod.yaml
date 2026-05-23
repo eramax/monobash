@@ -6,8 +6,7 @@ spec:
   containers:
   - name: tester
     image: docker.io/ubuntu:24.04
-    command: ["/bin/bash"]
-    args: ["-c", "sleep infinity"]
+    command: ["/bin/bash", "-c", "sleep infinity"]
     volumeMounts:
     - name: monobash-data
       mountPath: /mnt/monobash
