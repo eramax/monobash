@@ -21,6 +21,30 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, prog_name, "sh");
 
     if (!is_shell) {
+        // Busybox-style dispatch:
+        //   symlink: argv[0] is the applet name (cat, echo, etc.)
+        //   busybox: argv[1] is the applet name (busybox cat ...)
+        const is_busybox = std.mem.eql(u8, prog_name, "busybox") and args.len >= 2;
+        const applet_name = if (is_busybox) args[1] else prog_name;
+        if (applets.lookup(applet_name)) |_| {
+            core.initUring(64) catch {};
+            core.initCounters();
+            const arg_slice = if (is_busybox) blk: {
+                // busybox applet [args...] -> [applet, args...]
+                var sl = try arena.alloc([]const u8, args.len - 1);
+                sl[0] = applet_name;
+                for (args[2..], 1..) |arg, i| sl[i] = arg;
+                break :blk sl;
+            } else blk: {
+                // Symlink dispatch: replace argv[0] with basename
+                var sl = try arena.alloc([]const u8, args.len);
+                sl[0] = prog_name;
+                for (args[1..], 1..) |arg, i| sl[i] = arg;
+                break :blk sl;
+            };
+            const status = applets.run(init.io, applet_name, arg_slice);
+            std.process.exit(status);
+        }
         std.debug.print("bash: {s}: command not found\n", .{prog_name});
         std.process.exit(127);
     }
