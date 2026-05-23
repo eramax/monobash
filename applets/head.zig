@@ -3,12 +3,20 @@ const core = @import("core.zig");
 
 pub const meta = core.AppletMeta{ .name = "head", .main = main };
 
-fn parseNum(s: []const u8) ?usize {
-    return std.fmt.parseUnsigned(usize, s, 10) catch null;
+fn parseNum(s: []const u8) ?isize {
+    if (s.len == 0) return null;
+    if (s[0] == '-') {
+        const v = std.fmt.parseUnsigned(usize, s[1..], 10) catch return null;
+        if (v > @as(usize, @intCast(std.math.maxInt(isize)))) return null;
+        return -@as(isize, @intCast(v));
+    }
+    const v = std.fmt.parseUnsigned(usize, s, 10) catch return null;
+    if (v > @as(usize, @intCast(std.math.maxInt(isize)))) return null;
+    return @as(isize, @intCast(v));
 }
 
 pub fn main(args: [][]const u8) u8 {
-    var n: usize = 10;
+    var n: isize = 10;
     var c_mode = false;
     var i: usize = 1;
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
@@ -71,15 +79,38 @@ pub fn main(args: [][]const u8) u8 {
         if (c_mode) {
             const buf = core.readAll(std.heap.page_allocator, 0, 1024 * 1024) catch return 1;
             defer std.heap.page_allocator.free(buf);
-            core.writeAll(1, buf[0..@min(n, buf.len)]);
+            const count = if (n > 0) @as(usize, @intCast(n)) else 0;
+            core.writeAll(1, buf[0..@min(count, buf.len)]);
         } else {
-            var reader = core.LineReader.init(0);
-            var count: usize = 0;
-            while (reader.next()) |line| {
-                if (count >= n) break;
-                core.writeAll(1, line);
-                core.writeAll(1, "\n");
-                count += 1;
+            if (n < 0) {
+                var lines: std.ArrayList([]const u8) = .empty;
+                var reader = core.LineReader.init(0);
+                while (reader.next()) |line| {
+                    const copy = std.heap.page_allocator.dupe(u8, line) catch break;
+                    lines.append(std.heap.page_allocator, copy) catch {
+                        std.heap.page_allocator.free(copy);
+                        break;
+                    };
+                }
+                const total = @as(isize, @intCast(lines.items.len));
+                const to_print = total + n;
+                if (to_print > 0) {
+                    for (0..@as(usize, @intCast(to_print))) |j| {
+                        core.writeAll(1, lines.items[j]);
+                        core.writeAll(1, "\n");
+                    }
+                }
+                for (lines.items) |l| std.heap.page_allocator.free(l);
+                lines.deinit(std.heap.page_allocator);
+            } else {
+                var reader = core.LineReader.init(0);
+                var count: usize = 0;
+                while (reader.next()) |line| {
+                    if (count >= @as(usize, @intCast(n))) break;
+                    core.writeAll(1, line);
+                    core.writeAll(1, "\n");
+                    count += 1;
+                }
             }
         }
         return 0;
@@ -114,15 +145,38 @@ pub fn main(args: [][]const u8) u8 {
                 continue;
             };
             defer std.heap.page_allocator.free(buf);
-            core.writeAll(1, buf[0..@min(n, buf.len)]);
+            const count = if (n > 0) @as(usize, @intCast(n)) else 0;
+            core.writeAll(1, buf[0..@min(count, buf.len)]);
         } else {
-            var reader = core.LineReader.init(fd);
-            var count: usize = 0;
-            while (reader.next()) |line| {
-                if (count >= n) break;
-                core.writeAll(1, line);
-                core.writeAll(1, "\n");
-                count += 1;
+            if (n < 0) {
+                var lines: std.ArrayList([]const u8) = .empty;
+                var reader = core.LineReader.init(fd);
+                while (reader.next()) |line| {
+                    const copy = std.heap.page_allocator.dupe(u8, line) catch break;
+                    lines.append(std.heap.page_allocator, copy) catch {
+                        std.heap.page_allocator.free(copy);
+                        break;
+                    };
+                }
+                const total = @as(isize, @intCast(lines.items.len));
+                const to_print = total + n;
+                if (to_print > 0) {
+                    for (0..@as(usize, @intCast(to_print))) |j| {
+                        core.writeAll(1, lines.items[j]);
+                        core.writeAll(1, "\n");
+                    }
+                }
+                for (lines.items) |l| std.heap.page_allocator.free(l);
+                lines.deinit(std.heap.page_allocator);
+            } else {
+                var reader = core.LineReader.init(fd);
+                var count: usize = 0;
+                while (reader.next()) |line| {
+                    if (count >= @as(usize, @intCast(n))) break;
+                    core.writeAll(1, line);
+                    core.writeAll(1, "\n");
+                    count += 1;
+                }
             }
         }
     }
