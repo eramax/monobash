@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
 
     executor.init(arena);
 
-    _ = core.initUring(64) catch {};
+    core.initUring(64) catch {};
 
     if (args.len >= 3 and std.mem.eql(u8, args[1], "-c")) {
         var_store.command_flag = true;

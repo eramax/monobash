@@ -37,30 +37,24 @@ fn parseArgs(argc: c_int, argv: [*c][*c]u8) [][]const u8 {
 }
 
 // ── io_uring support ──
-var global_uring: ?iouring.Uring = null;
-pub var iouring_mode: bool = false;
+pub var global_uring: ?iouring.Uring = null;
 
 pub fn initUring(entries: u16) !void {
     if (global_uring != null) return;
     global_uring = try iouring.Uring.init(entries);
-    iouring_mode = true;
 }
 
 pub fn deinitUring() void {
     if (global_uring) |*u| { u.deinit(); global_uring = null; }
-    iouring_mode = false;
 }
 
 // ── Shared I/O helpers ──
 
 /// Read all bytes from fd into a buffer (up to max_size)
 pub fn readAll(allocator: std.mem.Allocator, fd: c_int, max_size: usize) ![]u8 {
-    if (iouring_mode) if (global_uring) |*u| {
-        var buf = try allocator.alloc(u8, max_size);
-        const n = try u.read(fd, buf);
-        return buf[0..n];
-    };
     var buf = try allocator.alloc(u8, max_size);
+    const u = &global_uring.?;
+    if (u.read(fd, buf)) |n| return buf[0..n] else |_| {}
     var pos: usize = 0;
     while (pos < max_size) {
         const n = c.read(fd, buf.ptr + pos, max_size - pos);
@@ -72,10 +66,8 @@ pub fn readAll(allocator: std.mem.Allocator, fd: c_int, max_size: usize) ![]u8 {
 
 /// Write all bytes to fd (retry on partial write)
 pub fn writeAll(fd: c_int, data: []const u8) void {
-    if (iouring_mode) if (global_uring) |*u| {
-        _ = u.write(fd, data) catch {};
-        return;
-    };
+    const u = &global_uring.?;
+    if (u.write(fd, data)) |_| return else |_| {}
     var pos: usize = 0;
     while (pos < data.len) {
         const n = c.write(fd, data.ptr + pos, data.len - pos);
