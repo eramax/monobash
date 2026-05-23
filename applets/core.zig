@@ -76,52 +76,51 @@ pub fn die(exit_code: u8, comptime fmt: []const u8, args: anytype) u8 {
 pub const LineReader = struct {
     buf: [65536]u8,
     pos: usize,
+    end: usize,
     fd: c_int,
     eof: bool,
 
     pub fn init(fd: c_int) LineReader {
-        return .{ .buf = undefined, .pos = 0, .fd = fd, .eof = false };
+        return .{ .buf = undefined, .pos = 0, .end = 0, .fd = fd, .eof = false };
     }
 
     pub fn next(self: *LineReader) ?[]const u8 {
-        var start = self.pos;
         while (true) {
-            // Scan for newline in buffered portion
-            var i = start;
-            while (i < self.pos) : (i += 1) {
+            // Scan for newline in unconsumed portion
+            var i = self.pos;
+            while (i < self.end) : (i += 1) {
                 if (self.buf[i] == '\n') {
-                    const line = self.buf[start..i];
-                    start = i + 1;
-                    self.pos = @intCast(start);
+                    const line = self.buf[self.pos..i];
+                    self.pos = i + 1;
                     return line;
                 }
             }
             // Need more data
             if (self.eof) {
-                if (start < self.pos) {
-                    const line = self.buf[start..self.pos];
-                    self.pos = @intCast(start);
+                if (self.pos < self.end) {
+                    const line = self.buf[self.pos..self.end];
+                    self.pos = self.end;
                     return line;
                 }
                 return null;
             }
             // Shift buffer
-            if (start > 0) {
-                std.mem.copyForwards(u8, self.buf[0..], self.buf[start..self.pos]);
-                self.pos -= start;
-                start = 0;
-            }
-            if (self.pos >= self.buf.len) {
-                // Line too long, return as-is
-                const line = self.buf[0..self.pos];
+            if (self.pos > 0) {
+                std.mem.copyForwards(u8, self.buf[0..], self.buf[self.pos..self.end]);
+                self.end -= self.pos;
                 self.pos = 0;
+            }
+            if (self.end >= self.buf.len) {
+                // Line too long, return as-is
+                const line = self.buf[0..self.end];
+                self.end = 0;
                 return line;
             }
-            const n = c.read(self.fd, self.buf.ptr + self.pos, self.buf.len - self.pos);
+            const n = c.read(self.fd, @as([*]u8, @ptrCast(&self.buf)) + self.end, self.buf.len - self.end);
             if (n <= 0) {
                 self.eof = true;
             } else {
-                self.pos += @intCast(n);
+                self.end += @intCast(n);
             }
         }
     }
@@ -180,8 +179,20 @@ pub const FileIter = struct {
     }
 };
 
-const c = @cImport({
+pub extern "c" var environ: [*c][*c]u8;
+
+pub const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/stat.h");
+    @cInclude("sys/utsname.h");
+    @cInclude("sys/wait.h");
     @cInclude("fcntl.h");
+    @cInclude("regex.h");
+    @cInclude("pwd.h");
+    @cInclude("grp.h");
+    @cInclude("stdlib.h");
+    @cInclude("stdio.h");
+    @cInclude("time.h");
+    @cInclude("dirent.h");
+    @cInclude("errno.h");
 });

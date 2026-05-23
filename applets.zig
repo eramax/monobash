@@ -9,6 +9,45 @@ const c = @cImport({
 const applets = struct {
     const _true = @import("applets/true.zig");
     const _false = @import("applets/false.zig");
+    const _cat = @import("applets/cat.zig");
+    const _yes = @import("applets/yes.zig");
+    const _sleep = @import("applets/sleep.zig");
+    const _ln = @import("applets/ln.zig");
+    const _chmod = @import("applets/chmod.zig");
+    const _chown = @import("applets/chown.zig");
+    const _uname = @import("applets/uname.zig");
+    const _hostname = @import("applets/hostname.zig");
+    const _env = @import("applets/env.zig");
+    const _printenv = @import("applets/printenv.zig");
+    const _basename = @import("applets/basename.zig");
+    const _dirname = @import("applets/dirname.zig");
+    const _whoami = @import("applets/whoami.zig");
+    const _id = @import("applets/id.zig");
+    const _which = @import("applets/which.zig");
+    const _grep = @import("applets/grep.zig");
+    const _groups = @import("applets/groups.zig");
+    const _head = @import("applets/head.zig");
+    const _tail = @import("applets/tail.zig");
+    const _wc = @import("applets/wc.zig");
+    const _uniq = @import("applets/uniq.zig");
+    const _cut = @import("applets/cut.zig");
+    const _tr = @import("applets/tr.zig");
+    const _tee = @import("applets/tee.zig");
+    const _seq = @import("applets/seq.zig");
+    const _arch = @import("applets/arch.zig");
+    const _nproc = @import("applets/nproc.zig");
+    const _uptime = @import("applets/uptime.zig");
+    const _users = @import("applets/users.zig");
+    const _date = @import("applets/date.zig");
+    const _echo = @import("applets/echo.zig");
+    const _test = @import("applets/test.zig");
+    const _clear = @import("applets/clear.zig");
+    const _cp = @import("applets/cp.zig");
+    const _mv = @import("applets/mv.zig");
+    const _rm = @import("applets/rm.zig");
+    const _mkdir = @import("applets/mkdir.zig");
+    const _rmdir = @import("applets/rmdir.zig");
+    const _touch = @import("applets/touch.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -28,6 +67,45 @@ fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
 const all_metas = &[_]core.AppletMeta{
     applets._true.meta,
     applets._false.meta,
+    applets._cat.meta,
+    applets._yes.meta,
+    applets._sleep.meta,
+    applets._ln.meta,
+    applets._chmod.meta,
+    applets._chown.meta,
+    applets._uname.meta,
+    applets._hostname.meta,
+    applets._env.meta,
+    applets._printenv.meta,
+    applets._basename.meta,
+    applets._dirname.meta,
+    applets._whoami.meta,
+    applets._id.meta,
+    applets._which.meta,
+    applets._grep.meta,
+    applets._groups.meta,
+    applets._head.meta,
+    applets._tail.meta,
+    applets._wc.meta,
+    applets._uniq.meta,
+    applets._cut.meta,
+    applets._tr.meta,
+    applets._tee.meta,
+    applets._seq.meta,
+    applets._arch.meta,
+    applets._nproc.meta,
+    applets._uptime.meta,
+    applets._users.meta,
+    applets._date.meta,
+    applets._echo.meta,
+    applets._test.meta,
+    applets._clear.meta,
+    applets._cp.meta,
+    applets._mv.meta,
+    applets._rm.meta,
+    applets._mkdir.meta,
+    applets._rmdir.meta,
+    applets._touch.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {
