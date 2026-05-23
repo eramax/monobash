@@ -48,13 +48,43 @@ pub fn deinitUring() void {
     if (global_uring) |*u| { u.deinit(); global_uring = null; }
 }
 
+pub fn initCounters() void {
+    ensureCounters();
+}
+
 // ── Shared I/O helpers ──
+
+pub var debug: bool = false;
+
+/// Shared counters visible across fork (mmap'd MAP_SHARED)
+pub const UringCounters = struct {
+    read_ok: u64,
+    read_fallback: u64,
+    write_ok: u64,
+    write_fallback: u64,
+};
+var uring_ctrs: ?*UringCounters = null;
+
+fn ensureCounters() void {
+    if (uring_ctrs == null) {
+        const ptr = std.posix.mmap(null, @sizeOf(UringCounters), .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED, .ANONYMOUS = true }, -1, 0) catch unreachable;
+        const ctrs = @as(*UringCounters, @ptrCast(@alignCast(ptr)));
+        ctrs.* = .{ .read_ok = 0, .read_fallback = 0, .write_ok = 0, .write_fallback = 0 };
+        uring_ctrs = ctrs;
+    }
+}
+
+pub fn uringCounts() UringCounters {
+    return if (uring_ctrs) |ctrs| ctrs.* else .{ .read_ok = 0, .read_fallback = 0, .write_ok = 0, .write_fallback = 0 };
+}
 
 /// Read all bytes from fd into a buffer (up to max_size)
 pub fn readAll(allocator: std.mem.Allocator, fd: c_int, max_size: usize) ![]u8 {
+    ensureCounters();
     var buf = try allocator.alloc(u8, max_size);
     const u = &global_uring.?;
-    if (u.read(fd, buf)) |n| return buf[0..n] else |_| {}
+    if (u.read(fd, buf)) |n| { uring_ctrs.?.read_ok += 1; return buf[0..n]; } else |_| {}
+    uring_ctrs.?.read_fallback += 1;
     var pos: usize = 0;
     while (pos < max_size) {
         const n = c.read(fd, buf.ptr + pos, max_size - pos);
@@ -64,10 +94,16 @@ pub fn readAll(allocator: std.mem.Allocator, fd: c_int, max_size: usize) ![]u8 {
     return buf[0..pos];
 }
 
+pub fn resetUringCounters() void {
+    if (uring_ctrs) |ctrs| ctrs.* = .{ .read_ok = 0, .read_fallback = 0, .write_ok = 0, .write_fallback = 0 };
+}
+
 /// Write all bytes to fd (retry on partial write)
 pub fn writeAll(fd: c_int, data: []const u8) void {
+    ensureCounters();
     const u = &global_uring.?;
-    if (u.write(fd, data)) |_| return else |_| {}
+    if (u.write(fd, data)) |_| { uring_ctrs.?.write_ok += 1; return; } else |_| {}
+    uring_ctrs.?.write_fallback += 1;
     var pos: usize = 0;
     while (pos < data.len) {
         const n = c.write(fd, data.ptr + pos, data.len - pos);

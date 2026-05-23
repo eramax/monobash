@@ -34,6 +34,12 @@ pub fn main(init: std.process.Init) !void {
     executor.init(arena);
 
     core.initUring(64) catch {};
+    core.initCounters();
+
+    // Check for --debug flag
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--debug")) core.debug = true;
+    }
 
     if (args.len >= 3 and std.mem.eql(u8, args[1], "-c")) {
         var_store.command_flag = true;
@@ -108,7 +114,10 @@ pub fn main(init: std.process.Init) !void {
         history.add(line);
         if (histfile.len > 0) history.append(histfile, line);
 
+        core.resetUringCounters();
         const line_z = arena.dupeZ(u8, line) catch continue;
+        var ts_: c.struct_timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts_);
         const tree = parser.parseString(line_z) orelse {
             const errmsg = "parse error\n";
             _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), init.io, errmsg) catch {};
@@ -116,5 +125,20 @@ pub fn main(init: std.process.Init) !void {
         };
         defer parser.treeDelete(tree);
         last_status = executor.exec(init.io, tree, line_z);
+
+        if (core.debug) {
+            var ts2: c.struct_timespec = undefined;
+            _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts2);
+            const elapsed_ns = (@as(u64, @intCast(ts2.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts2.tv_nsec))) - (@as(u64, @intCast(ts_.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts_.tv_nsec)));
+            const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+            var buf: [256]u8 = undefined;
+            const ctr = core.uringCounts();
+            const s = std.fmt.bufPrint(&buf, " ── {d:.2}ms  io_uring: {d}W+{d}R  fallback: {d}W+{d}R\n", .{
+                elapsed_ms,
+                ctr.write_ok, ctr.read_ok,
+                ctr.write_fallback, ctr.read_fallback,
+            }) catch "";
+            _ = std.Io.File.writeStreamingAll(std.Io.File.stderr(), init.io, s) catch {};
+        }
     }
 }
