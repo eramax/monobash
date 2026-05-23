@@ -10,16 +10,11 @@ fn copyFile(src: [:0]const u8, dst: [:0]const u8) u8 {
     const fd_dst = core.c.open(dst.ptr, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, @as(c_uint, 0o666));
     if (fd_dst < 0) return 1;
     defer _ = core.c.close(fd_dst);
-    var buf: [65536]u8 = undefined;
     while (true) {
-        const n = core.c.read(fd_src, &buf, buf.len);
-        if (n <= 0) return if (n < 0) @as(u8, 1) else @as(u8, 0);
-        var off: usize = 0;
-        while (off < @as(usize, @intCast(n))) {
-            const w = core.c.write(fd_dst, @as([*]u8, @ptrCast(&buf)) + off, @as(usize, @intCast(n)) - off);
-            if (w < 0) return 1;
-            off += @intCast(w);
-        }
+        const data = core.readAll(std.heap.page_allocator, fd_src, 65536) catch return 1;
+        defer std.heap.page_allocator.free(data);
+        if (data.len == 0) return 0;
+        core.writeAll(fd_dst, data);
     }
 }
 

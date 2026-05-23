@@ -53,9 +53,9 @@ pub fn main(args: [][]const u8) u8 {
         if (comm_fd < 0) continue;
         defer _ = core.c.close(comm_fd);
 
-        const n = core.c.read(comm_fd, @as([*c]u8, @ptrCast(&comm_buf)), comm_buf.len);
-        if (n <= 0) continue;
-        const comm = std.mem.trimEnd(u8, comm_buf[0..@intCast(n)], "\n");
+        const cdata = core.readAll(std.heap.page_allocator, comm_fd, 256) catch continue;
+        defer std.heap.page_allocator.free(cdata);
+        const comm = std.mem.trimEnd(u8, cdata, "\n");
 
         if (std.mem.eql(u8, comm, program)) {
             pids.append(alloc, pid) catch {};

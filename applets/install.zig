@@ -83,16 +83,11 @@ pub fn main(args: [][]const u8) u8 {
     const dfd = core.c.open(&dbuf, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, mode);
     if (dfd < 0) return core.die(1, "install: cannot create '{s}'\n", .{dst});
     defer _ = core.c.close(dfd);
-    var buf: [65536]u8 = undefined;
     while (true) {
-        const n = core.c.read(sfd, &buf, buf.len);
-        if (n <= 0) break;
-        var pos: isize = 0;
-        while (pos < n) {
-            const w = core.c.write(dfd, buf[@as(usize, @intCast(pos))..].ptr, @as(usize, @intCast(n - pos)));
-            if (w < 0) return core.die(1, "install: write error\n", .{});
-            pos += w;
-        }
+        const chunk = core.readAll(std.heap.page_allocator, sfd, 65536) catch break;
+        defer std.heap.page_allocator.free(chunk);
+        if (chunk.len == 0) break;
+        core.writeAll(dfd, chunk);
     }
     _ = core.c.chmod(&dbuf, mode);
     if (owner) |o| {

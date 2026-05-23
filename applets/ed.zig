@@ -25,13 +25,8 @@ pub fn main(args: [][]const u8) u8 {
         const fd = core.c.open(zpath[0..path.len :0].ptr, core.c.O_RDONLY);
         if (fd >= 0) {
             defer _ = core.c.close(fd);
-            var rpos: usize = 0;
-            while (rpos < buf.len) {
-                const n = core.c.read(fd, @as([*]u8, @ptrCast(&buf)) + rpos, buf.len - rpos);
-                if (n <= 0) break;
-                rpos += @intCast(n);
-            }
-            const data = buf[0..rpos];
+            const data = core.readAll(std.heap.page_allocator, fd, buf.len) catch "";
+            defer std.heap.page_allocator.free(data);
             var line_start: usize = 0;
             var i: usize = 0;
             while (i < data.len) : (i += 1) {
@@ -57,7 +52,7 @@ pub fn main(args: [][]const u8) u8 {
 
     var cmd_buf: [4096]u8 = undefined;
     while (true) {
-        _ = core.c.write(2, ": ", 2);
+        core.writeAll(2, ": ");
         var pos: usize = 0;
         while (pos < cmd_buf.len) {
             var ch: u8 = 0;
@@ -75,12 +70,12 @@ pub fn main(args: [][]const u8) u8 {
 
         if (std.mem.eql(u8, cmd, "p")) {
             if (line_count == 0) {
-                _ = core.c.write(2, "?\n", 2);
+                core.writeAll(2, "?\n");
                 continue;
             }
             for (0..line_count) |i| {
-                _ = core.c.write(1, lines[i].ptr, lines[i].len);
-                _ = core.c.write(1, "\n", 1);
+                core.writeAll(1, lines[i]);
+                core.writeAll(1, "\n");
             }
             continue;
         }
@@ -89,17 +84,17 @@ pub fn main(args: [][]const u8) u8 {
             for (0..line_count) |i| {
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{}", .{i + 1}) catch "?";
-                _ = core.c.write(1, num_str.ptr, num_str.len);
-                _ = core.c.write(1, "\t", 1);
-                _ = core.c.write(1, lines[i].ptr, lines[i].len);
-                _ = core.c.write(1, "\n", 1);
+                core.writeAll(1, num_str);
+                core.writeAll(1, "\t");
+                core.writeAll(1, lines[i]);
+                core.writeAll(1, "\n");
             }
             continue;
         }
 
         if (std.mem.eql(u8, cmd, "w")) {
             if (args.len < 2) {
-                _ = core.c.write(2, "?\n", 2);
+                core.writeAll(2, "?\n");
                 continue;
             }
             var zpath: [4096:0]u8 = undefined;
@@ -109,19 +104,19 @@ pub fn main(args: [][]const u8) u8 {
             zpath[path.len] = 0;
             const fd = core.c.open(zpath[0..path.len :0].ptr, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, @as(c_uint, 0o644));
             if (fd < 0) {
-                _ = core.c.write(2, "?\n", 2);
+                core.writeAll(2, "?\n");
                 continue;
             }
             defer _ = core.c.close(fd);
             for (0..line_count) |i| {
-                _ = core.c.write(fd, lines[i].ptr, lines[i].len);
-                _ = core.c.write(fd, "\n", 1);
+                core.writeAll(fd, lines[i]);
+                core.writeAll(fd, "\n");
             }
             continue;
         }
 
         if (std.mem.eql(u8, cmd, "a")) {
-            _ = core.c.write(2, "enter text ('.' on line to end):\n", 33);
+            core.writeAll(2, "enter text ('.' on line to end):\n");
             while (true) {
                 var lpos: usize = 0;
                 while (lpos < cmd_buf.len) {
@@ -144,7 +139,7 @@ pub fn main(args: [][]const u8) u8 {
         }
 
         if (std.mem.eql(u8, cmd, "i")) {
-            _ = core.c.write(2, "enter text ('.' on line to end):\n", 33);
+            core.writeAll(2, "enter text ('.' on line to end):\n");
             // Insert before current position
             const insert_pos = if (current > 0) current - 1 else @as(usize, 0);
             var new_lines: [4096][]u8 = undefined;
@@ -188,20 +183,20 @@ pub fn main(args: [][]const u8) u8 {
             var found = false;
             for (0..line_count) |i| {
                 if (std.mem.indexOf(u8, lines[i], pat) != null) {
-                    _ = core.c.write(1, lines[i].ptr, lines[i].len);
-                    _ = core.c.write(1, "\n", 1);
+                    core.writeAll(1, lines[i]);
+                    core.writeAll(1, "\n");
                     current = i + 1;
                     found = true;
                     break;
                 }
             }
             if (!found) {
-                _ = core.c.write(2, "?\n", 2);
+                core.writeAll(2, "?\n");
             }
             continue;
         }
 
-        _ = core.c.write(2, "?\n", 2);
+        core.writeAll(2, "?\n");
     }
 
     for (0..line_count) |i| alloc.free(lines[i]);

@@ -19,9 +19,9 @@ fn getPidUser(_pid: u32) ?u32 {
     const fd = core.c.open(z_buf[0..stat_path.len :0].ptr, core.c.O_RDONLY);
     if (fd < 0) return null;
     defer _ = core.c.close(fd);
-    var data_buf: [1024]u8 = undefined;
-    const n = core.c.read(fd, &data_buf, data_buf.len);
-    if (n <= 0) return null;
+    const data = core.readAll(std.heap.page_allocator, fd, 1024) catch return null;
+    defer std.heap.page_allocator.free(data);
+    if (data.len == 0) return null;
     return null;
 }
 
@@ -83,10 +83,13 @@ pub fn main(args: [][]const u8) u8 {
         const comm_fd = core.c.open(z_buf[0..comm_path.len :0].ptr, core.c.O_RDONLY);
         var comm_name: []const u8 = "";
         if (comm_fd >= 0) {
-            var cbuf: [64]u8 = undefined;
-            const cn = core.c.read(comm_fd, &cbuf, cbuf.len);
-            if (cn > 0) {
-                comm_name = std.mem.trim(u8, cbuf[0..@intCast(cn)], " \t\r\n");
+            const cdata = core.readAll(std.heap.page_allocator, comm_fd, 64) catch {
+                _ = core.c.close(comm_fd);
+                continue;
+            };
+            defer std.heap.page_allocator.free(cdata);
+            if (cdata.len > 0) {
+                comm_name = std.mem.trim(u8, cdata, " \t\r\n");
             }
             _ = core.c.close(comm_fd);
         }

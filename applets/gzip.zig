@@ -25,37 +25,19 @@ fn writeLe32(fd: c_int, val: u32) u8 {
     buf[1] = @intCast((val >> 8) & 0xFF);
     buf[2] = @intCast((val >> 16) & 0xFF);
     buf[3] = @intCast((val >> 24) & 0xFF);
-    var off: usize = 0;
-    while (off < 4) {
-        const w = core.c.write(fd, @as([*]u8, @ptrCast(&buf)) + off, 4 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, buf[0..]);
     return 0;
 }
 
 fn readLe32(fd: c_int) ?u32 {
-    var buf: [4]u8 = undefined;
-    var off: usize = 0;
-    while (off < 4) {
-        const n = core.c.read(fd, @as([*]u8, @ptrCast(&buf)) + off, 4 - off);
-        if (n <= 0) return null;
-        off += @intCast(n);
-    }
+    const buf = core.readAll(std.heap.page_allocator, fd, 4) catch return null;
+    defer std.heap.page_allocator.free(buf);
+    if (buf.len < 4) return null;
     return @as(u32, buf[0]) | (@as(u32, buf[1]) << 8) | (@as(u32, buf[2]) << 16) | (@as(u32, buf[3]) << 24);
 }
 
 fn readAllFd(alloc: std.mem.Allocator, fd: c_int) ![]u8 {
-    var buf = try alloc.alloc(u8, 65536);
-    var pos: usize = 0;
-    while (true) {
-        if (pos >= buf.len) buf = try alloc.realloc(buf, buf.len * 2);
-        const n = core.c.read(fd, buf.ptr + pos, buf.len - pos);
-        if (n < 0) return error.ReadError;
-        if (n == 0) break;
-        pos += @intCast(n);
-    }
-    return buf[0..pos];
+    return core.readAll(alloc, fd, 1 << 28);
 }
 
 fn doCompress(in_fd: c_int, out_fd: c_int) u8 {
@@ -65,20 +47,10 @@ fn doCompress(in_fd: c_int, out_fd: c_int) u8 {
 
     // Gzip header: magic, method=0 (stored), flags=0, mtime=0, xflags=0, os=255
     var hdr: [10]u8 = .{ 0x1F, 0x8B, 0, 0, 0, 0, 0, 0, 0, 255 };
-    var off: usize = 0;
-    while (off < 10) {
-        const w = core.c.write(out_fd, @as([*]u8, @ptrCast(&hdr)) + off, 10 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(out_fd, hdr[0..]);
 
     // Raw uncompressed data
-    off = 0;
-    while (off < data.len) {
-        const w = core.c.write(out_fd, data.ptr + off, data.len - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(out_fd, data);
 
     // CRC32 and original size
     const crc = crc32(data);
@@ -89,58 +61,48 @@ fn doCompress(in_fd: c_int, out_fd: c_int) u8 {
 }
 
 fn doDecompress(in_fd: c_int, out_fd: c_int) u8 {
-    var hdr: [10]u8 = undefined;
-    var off: usize = 0;
-    while (off < 10) {
-        const n = core.c.read(in_fd, @as([*]u8, @ptrCast(&hdr)) + off, 10 - off);
-        if (n <= 0) return 1;
-        off += @intCast(n);
-    }
+    const hdr_data = core.readAll(std.heap.page_allocator, in_fd, 10) catch return 1;
+    defer std.heap.page_allocator.free(hdr_data);
+    if (hdr_data.len < 10) return 1;
+    const hdr = hdr_data[0..10];
 
     if (hdr[0] != 0x1F or hdr[1] != 0x8B) return core.die(1, "gzip: not in gzip format\n", .{});
     if (hdr[2] != 0) return core.die(1, "gzip: unsupported compression method\n", .{});
     // Skip extra fields
     const flg = hdr[3];
     if (flg & 0x04 != 0) {
-        // FEXTRA
-        var xlen_buf: [2]u8 = undefined;
-        off = 0;
-        while (off < 2) {
-            const n = core.c.read(in_fd, @as([*]u8, @ptrCast(&xlen_buf)) + off, 2 - off);
-            if (n <= 0) return 1;
-            off += @intCast(n);
-        }
-        var xlen: usize = @as(usize, xlen_buf[0]) | (@as(usize, xlen_buf[1]) << 8);
+        const xlen_data = core.readAll(std.heap.page_allocator, in_fd, 2) catch return 1;
+        defer std.heap.page_allocator.free(xlen_data);
+        if (xlen_data.len < 2) return 1;
+        var xlen: usize = @as(usize, xlen_data[0]) | (@as(usize, xlen_data[1]) << 8);
         while (xlen > 0) {
-            var tmp: [256]u8 = undefined;
-            const r = @min(xlen, tmp.len);
-            const n = core.c.read(in_fd, &tmp, r);
-            if (n <= 0) return 1;
-            xlen -|= @as(usize, @intCast(n));
+            const r = @min(xlen, 256);
+            const tmp = core.readAll(std.heap.page_allocator, in_fd, r) catch return 1;
+            defer std.heap.page_allocator.free(tmp);
+            if (tmp.len == 0) return 1;
+            xlen -|= tmp.len;
         }
     }
     if (flg & 0x08 != 0) {
         while (true) {
-            var b: u8 = 0;
-            if (core.c.read(in_fd, &b, 1) <= 0) return 1;
-            if (b == 0) break;
+            const b_data = core.readAll(std.heap.page_allocator, in_fd, 1) catch return 1;
+            defer std.heap.page_allocator.free(b_data);
+            if (b_data.len == 0) return 1;
+            if (b_data[0] == 0) break;
         }
     }
     if (flg & 0x10 != 0) {
         while (true) {
-            var b: u8 = 0;
-            if (core.c.read(in_fd, &b, 1) <= 0) return 1;
-            if (b == 0) break;
+            const b_data = core.readAll(std.heap.page_allocator, in_fd, 1) catch return 1;
+            defer std.heap.page_allocator.free(b_data);
+            if (b_data.len == 0) return 1;
+            if (b_data[0] == 0) break;
         }
     }
     if (flg & 0x02 != 0) {
-        var chk: [2]u8 = undefined;
-        off = 0;
-        while (off < 2) {
-            const n = core.c.read(in_fd, @as([*]u8, @ptrCast(&chk)) + off, 2 - off);
-            if (n <= 0) return 1;
-            off += @intCast(n);
-        }
+        const chk_data = core.readAll(std.heap.page_allocator, in_fd, 2) catch return 1;
+        defer std.heap.page_allocator.free(chk_data);
+        if (chk_data.len < 2) return 1;
     }
 
     const alloc = std.heap.page_allocator;
@@ -157,12 +119,7 @@ fn doDecompress(in_fd: c_int, out_fd: c_int) u8 {
     if (stored_crc != actual_crc) return core.die(1, "gzip: crc error\n", .{});
     if (stored_size != actual_size) return core.die(1, "gzip: size error\n", .{});
 
-    var pos: usize = 0;
-    while (pos < data.len - 8) {
-        const w = core.c.write(out_fd, data.ptr + pos, (data.len - 8) - pos);
-        if (w < 0) return 1;
-        pos += @intCast(w);
-    }
+    core.writeAll(out_fd, data[0..data.len - 8]);
     return 0;
 }
 

@@ -87,11 +87,11 @@ fn serveFile(client: c_int, doc_root: []const u8, path: []const u8) void {
     const h = std.fmt.bufPrint(&hdr, "HTTP/1.0 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n\r\n", .{ mt, st.st_size }) catch return;
     _ = core.c.send(client, h.ptr, h.len, 0);
 
-    var buf: [16384]u8 = undefined;
     while (true) {
-        const n = core.c.read(fd, &buf, buf.len);
-        if (n <= 0) break;
-        _ = core.c.send(client, &buf, @as(usize, @intCast(n)), 0);
+        const data = core.readAll(std.heap.page_allocator, fd, 16384) catch break;
+        defer std.heap.page_allocator.free(data);
+        if (data.len == 0) break;
+        _ = core.c.send(client, data.ptr, data.len, 0);
     }
 }
 

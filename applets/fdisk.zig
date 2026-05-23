@@ -130,9 +130,8 @@ fn listTable(device: []const u8) u8 {
     if (fd < 0) return core.die(1, "fdisk: cannot open {s}\n", .{dev_path});
     defer _ = core.c.close(fd);
 
-    var mbr: [512]u8 = undefined;
-    const n = core.c.read(fd, &mbr, mbr.len);
-    if (n < 512) return core.die(1, "fdisk: cannot read MBR from {s}\n", .{dev_path});
+    const mbr = core.readAll(std.heap.page_allocator, fd, 512) catch return core.die(1, "fdisk: cannot read MBR from {s}\n", .{dev_path});
+    if (mbr.len < 512) return core.die(1, "fdisk: cannot read MBR from {s}\n", .{dev_path});
 
     // Check MBR signature
     if (mbr[510] != 0x55 or mbr[511] != 0xAA) return core.die(1, "fdisk: no valid MBR signature on {s}\n", .{dev_path});

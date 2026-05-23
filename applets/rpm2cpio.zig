@@ -4,16 +4,7 @@ const core = @import("core.zig");
 pub const meta = core.AppletMeta{ .name = "rpm2cpio", .main = main };
 
 fn readAllFd(alloc: std.mem.Allocator, fd: c_int) ![]u8 {
-    var buf = try alloc.alloc(u8, 65536);
-    var pos: usize = 0;
-    while (true) {
-        if (pos >= buf.len) buf = try alloc.realloc(buf, buf.len * 2);
-        const n = core.c.read(fd, buf.ptr + pos, buf.len - pos);
-        if (n < 0) return error.ReadError;
-        if (n == 0) break;
-        pos += @intCast(n);
-    }
-    return buf[0..pos];
+    return core.readAll(alloc, fd, 1 << 28);
 }
 
 pub fn main(args: [][]const u8) u8 {
@@ -51,12 +42,7 @@ pub fn main(args: [][]const u8) u8 {
 
     if (pos >= data.len) return core.die(1, "rpm2cpio: no cpio archive found\n", .{});
 
-    var off: usize = 0;
-    while (off < data.len - pos) {
-        const w = core.c.write(1, data.ptr + pos + off, (data.len - pos) - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(1, data[pos..]);
 
     return 0;
 }

@@ -8,7 +8,7 @@ pub fn main(_: [][]const u8) u8 {
     var buf: [256]u8 = undefined;
     const len = core.c.strftime(&buf, buf.len, "%a %b %e %H:%M:%S %Z %Y", tm);
     if (len == 0) return 1;
-    _ = core.c.write(1, &buf, len);
-    _ = core.c.write(1, "\n", 1);
+    core.writeAll(1, buf[0..len]);
+    core.writeAll(1, "\n");
     return 0;
 }

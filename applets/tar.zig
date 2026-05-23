@@ -38,7 +38,6 @@ fn createArchive(archive: [:0]const u8, files: [][]const u8) u8 {
     var blk: [512]u8 = std.mem.zeroes([512]u8);
     var path_buf: [4096:0]u8 = undefined;
     var zero: [512]u8 = std.mem.zeroes([512]u8);
-    var off: usize = 0;
 
     for (files) |file| {
         if (file.len >= path_buf.len) continue;
@@ -72,12 +71,7 @@ fn createArchive(archive: [:0]const u8, files: [][]const u8) u8 {
         @memset(ckbuf, 0);
         octSet(ckbuf, chk);
 
-        off = 0;
-        while (off < 512) {
-            const w = core.c.write(fd, @as([*]u8, @ptrCast(&hdr)) + off, 512 - off);
-            if (w < 0) return 1;
-            off += @intCast(w);
-        }
+        core.writeAll(fd, hdr[0..]);
 
         if (file_size > 0) {
             const ffd = core.c.open(path_z.ptr, core.c.O_RDONLY);
@@ -87,33 +81,20 @@ fn createArchive(archive: [:0]const u8, files: [][]const u8) u8 {
             var remaining = file_size;
             while (remaining > 0) {
                 const to_read = @min(remaining, 512);
-                const n = core.c.read(ffd, &blk, to_read);
-                if (n <= 0) break;
-                @memset(blk[@as(usize, @intCast(n))..512], 0);
-                off = 0;
-                while (off < 512) {
-                    const w = core.c.write(fd, @as([*]u8, @ptrCast(&blk)) + off, 512 - off);
-                    if (w < 0) return 1;
-                    off += @intCast(w);
-                }
-                remaining -|= @intCast(n);
+                const chunk = core.readAll(std.heap.page_allocator, ffd, to_read) catch break;
+                defer std.heap.page_allocator.free(chunk);
+                if (chunk.len == 0) break;
+                @memset(blk[0..512], 0);
+                @memcpy(blk[0..chunk.len], chunk);
+                core.writeAll(fd, blk[0..512]);
+                remaining -|= chunk.len;
             }
         }
     }
 
     // End-of-archive: two zero blocks
-    off = 0;
-    while (off < 512) {
-        const w = core.c.write(fd, @as([*]u8, @ptrCast(&zero)) + off, 512 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
-    off = 0;
-    while (off < 512) {
-        const w = core.c.write(fd, @as([*]u8, @ptrCast(&zero)) + off, 512 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, zero[0..]);
+    core.writeAll(fd, zero[0..]);
     return 0;
 }
 
@@ -123,12 +104,13 @@ fn extractArchive(archive: [:0]const u8) u8 {
     defer _ = core.c.close(fd);
 
     var hdr: [512]u8 = undefined;
-    var blk: [512]u8 = undefined;
     var rc: u8 = 0;
 
     while (true) {
-        const n = core.c.read(fd, &hdr, 512);
-        if (n < 512) break;
+        const hdr_data = core.readAll(std.heap.page_allocator, fd, 512) catch break;
+        defer std.heap.page_allocator.free(hdr_data);
+        if (hdr_data.len < 512) break;
+        @memcpy(&hdr, hdr_data[0..512]);
 
         // Check for end-of-archive (two zero blocks)
         if (hdr[0] == 0) break;
@@ -159,22 +141,18 @@ fn extractArchive(archive: [:0]const u8) u8 {
             var remaining = size;
             while (remaining > 0) {
                 const to_read = @min(remaining, 512);
-                const n2 = core.c.read(fd, &blk, to_read);
-                if (n2 <= 0) break;
-
-                var off2: usize = 0;
-                while (off2 < @as(usize, @intCast(n2))) {
-                    const w = core.c.write(ofd, @as([*]u8, @ptrCast(&blk)) + off2, @as(usize, @intCast(n2)) - off2);
-                    if (w < 0) break;
-                    off2 += @intCast(w);
-                }
-                remaining -|= @as(usize, @intCast(n2));
+                const chunk = core.readAll(std.heap.page_allocator, fd, to_read) catch break;
+                defer std.heap.page_allocator.free(chunk);
+                if (chunk.len == 0) break;
+                core.writeAll(ofd, chunk);
+                remaining -|= chunk.len;
             }
             // Skip padding
             const pad = (512 - (size % 512)) % 512;
             if (pad > 0) {
-                var skip_buf: [512]u8 = undefined;
-                _ = core.c.read(fd, &skip_buf, pad);
+                if (core.readAll(std.heap.page_allocator, fd, pad)) |skip_data| {
+                    std.heap.page_allocator.free(skip_data);
+                } else |_| {}
             }
         }
     }
@@ -189,8 +167,10 @@ fn listArchive(archive: [:0]const u8) u8 {
     var hdr: [512]u8 = undefined;
 
     while (true) {
-        const n = core.c.read(fd, &hdr, 512);
-        if (n < 512) break;
+        const hdr_data = core.readAll(std.heap.page_allocator, fd, 512) catch break;
+        defer std.heap.page_allocator.free(hdr_data);
+        if (hdr_data.len < 512) break;
+        @memcpy(&hdr, hdr_data[0..512]);
         if (hdr[0] == 0) break;
 
         const name = std.mem.sliceTo(@as([*c]u8, @ptrCast(&hdr[0])), 0);
@@ -211,13 +191,13 @@ fn listArchive(archive: [:0]const u8) u8 {
         // Skip file data + padding
         const skip_total = size + (512 - (size % 512)) % 512;
         if (skip_total > 0) {
-            var skip_buf: [4096]u8 = undefined;
             var to_skip = skip_total;
             while (to_skip > 0) {
-                const r = @min(to_skip, skip_buf.len);
-                const n2 = core.c.read(fd, &skip_buf, r);
-                if (n2 <= 0) break;
-                to_skip -|= @as(usize, @intCast(n2));
+                const r = @min(to_skip, 4096);
+                if (core.readAll(std.heap.page_allocator, fd, r)) |skip_data| {
+                    std.heap.page_allocator.free(skip_data);
+                    to_skip -|= skip_data.len;
+                } else |_| break;
             }
         }
     }

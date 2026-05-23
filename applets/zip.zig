@@ -17,25 +17,13 @@ fn crc32(data: []const u8) u32 {
 
 fn writeLe16(fd: c_int, val: u16) u8 {
     const buf: [2]u8 = .{ @intCast(val & 0xFF), @intCast((val >> 8) & 0xFF) };
-    const slice = &buf;
-    var off: usize = 0;
-    while (off < 2) {
-        const w = core.c.write(fd, slice.ptr + off, 2 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, buf[0..]);
     return 0;
 }
 
 fn writeLe32(fd: c_int, val: u32) u8 {
     const buf: [4]u8 = .{ @intCast(val & 0xFF), @intCast((val >> 8) & 0xFF), @intCast((val >> 16) & 0xFF), @intCast((val >> 24) & 0xFF) };
-    const slice = &buf;
-    var off: usize = 0;
-    while (off < 4) {
-        const w = core.c.write(fd, slice.ptr + off, 4 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, buf[0..]);
     return 0;
 }
 
@@ -69,12 +57,7 @@ fn writeLocalHeader(fd: c_int, name: []const u8, crc: u32, comp_size: u32, uncom
     if (writeLe32(fd, uncomp_size) != 0) return 1;
     if (writeLe16(fd, @intCast(name.len)) != 0) return 1;
     if (writeLe16(fd, 0) != 0) return 1;
-    var off: usize = 0;
-    while (off < name.len) {
-        const w = core.c.write(fd, name.ptr + off, name.len - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, name);
     return 0;
 }
 
@@ -96,12 +79,7 @@ fn writeCentralEntry(fd: c_int, name: []const u8, crc: u32, comp_size: u32, unco
     if (writeLe16(fd, 0) != 0) return 1;
     if (writeLe32(fd, mode) != 0) return 1;
     if (writeLe32(fd, local_offset) != 0) return 1;
-    var off: usize = 0;
-    while (off < name.len) {
-        const w = core.c.write(fd, name.ptr + off, name.len - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(fd, name);
     return 0;
 }
 
@@ -131,12 +109,11 @@ fn addFile(alloc: std.mem.Allocator, files: *std.ArrayListUnmanaged(FileEntry), 
     defer _ = core.c.close(fd);
 
     var data = std.ArrayListUnmanaged(u8).empty;
-    var buf: [8192]u8 = undefined;
     while (true) {
-        const n = core.c.read(fd, &buf, buf.len);
-        if (n < 0) break;
-        if (n == 0) break;
-        data.appendSlice(alloc, buf[0..@as(usize, @intCast(n))]) catch break;
+        const chunk = core.readAll(std.heap.page_allocator, fd, 8192) catch break;
+        defer std.heap.page_allocator.free(chunk);
+        if (chunk.len == 0) break;
+        data.appendSlice(alloc, chunk) catch break;
     }
 
     const file_data = data.items;
@@ -251,12 +228,7 @@ pub fn main(args: [][]const u8) u8 {
         if (writeLocalHeader(fd, file.name, file.crc, @as(u32, @intCast(file.data.len)), @as(u32, @intCast(file.data.len)), file.dos_time, file.dos_date) != 0) return 1;
         current_offset += @as(u32, @intCast(30 + file.name.len));
 
-        var off: usize = 0;
-        while (off < file.data.len) {
-            const w = core.c.write(fd, file.data.ptr + off, file.data.len - off);
-            if (w < 0) return 1;
-            off += @intCast(w);
-        }
+        core.writeAll(fd, file.data);
         current_offset += @as(u32, @intCast(file.data.len));
     }
 

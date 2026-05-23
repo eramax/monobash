@@ -12,16 +12,7 @@ fn readLe32(buf: []const u8, off: usize) u32 {
 }
 
 fn readAllFd(alloc: std.mem.Allocator, fd: c_int) ![]u8 {
-    var buf = try alloc.alloc(u8, 65536);
-    var pos: usize = 0;
-    while (true) {
-        if (pos >= buf.len) buf = try alloc.realloc(buf, buf.len * 2);
-        const n = core.c.read(fd, buf.ptr + pos, buf.len - pos);
-        if (n < 0) return error.ReadError;
-        if (n == 0) break;
-        pos += @intCast(n);
-    }
-    return buf[0..pos];
+    return core.readAll(alloc, fd, 1 << 28);
 }
 
 fn mkdirAll(path: []const u8) void {
@@ -175,12 +166,7 @@ pub fn main(args: [][]const u8) u8 {
                 mkdirAll(std.fs.path.dirname(out_path) orelse ".");
                 const ofd = core.c.open(out_z[0..out_path.len :0].ptr, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, @as(c_uint, 0o644));
                 if (ofd >= 0) {
-                    var woff: usize = 0;
-                    while (woff < file_data.len) {
-                        const w = core.c.write(ofd, file_data.ptr + woff, file_data.len - woff);
-                        if (w < 0) break;
-                        woff += @intCast(w);
-                    }
+                    core.writeAll(ofd, file_data);
                     _ = core.c.close(ofd);
                 }
             }

@@ -15,6 +15,6 @@ pub fn main(args: [][]const u8) u8 {
     defer _ = core.c.close(fd);
     var data: [32]u8 = undefined;
     const s = std.fmt.bufPrint(&data, "{d}:0\n", .{class}) catch return 1;
-    _ = core.c.write(fd, s.ptr, s.len);
+    core.writeAll(fd, s);
     return 0;
 }

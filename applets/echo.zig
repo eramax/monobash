@@ -4,11 +4,11 @@ pub fn main(args: [][]const u8) u8 {
     var first = true;
     var i: usize = 1;
     while (i < args.len) {
-        if (!first) _ = core.c.write(1, " ", 1);
-        _ = core.c.write(1, args[i].ptr, args[i].len);
+        if (!first) core.writeAll(1, " ");
+        core.writeAll(1, args[i]);
         first = false;
         i += 1;
     }
-    _ = core.c.write(1, "\n", 1);
+    core.writeAll(1, "\n");
     return 0;
 }

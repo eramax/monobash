@@ -46,15 +46,8 @@ fn mkdirAll(path: []const u8) void {
 
 fn doList() u8 {
     const alloc = std.heap.page_allocator;
-    var data = std.ArrayListUnmanaged(u8).empty;
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = core.c.read(0, &buf, buf.len);
-        if (n <= 0) break;
-        data.appendSlice(alloc, buf[0..@as(usize, @intCast(n))]) catch return 1;
-    }
-
-    const bytes = data.items;
+    const bytes = core.readAll(alloc, 0, 1 << 28) catch return 1;
+    defer alloc.free(bytes);
     var pos: usize = 0;
 
     while (pos + 110 <= bytes.len) {
@@ -85,15 +78,8 @@ fn doList() u8 {
 
 fn doExtract(create_dirs: bool) u8 {
     const alloc = std.heap.page_allocator;
-    var data = std.ArrayListUnmanaged(u8).empty;
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = core.c.read(0, &buf, buf.len);
-        if (n <= 0) break;
-        data.appendSlice(alloc, buf[0..@as(usize, @intCast(n))]) catch return 1;
-    }
-
-    const bytes = data.items;
+    const bytes = core.readAll(alloc, 0, 1 << 28) catch return 1;
+    defer alloc.free(bytes);
     var pos: usize = 0;
 
     while (pos + 110 <= bytes.len) {
@@ -131,12 +117,7 @@ fn doExtract(create_dirs: bool) u8 {
                 }
                 const ofd = core.c.open(path_buf[0..name.len :0].ptr, core.c.O_WRONLY | core.c.O_CREAT | core.c.O_TRUNC, @as(c_uint, @intCast(mode & 0o777)));
                 if (ofd >= 0) {
-                    var woff: usize = 0;
-                    while (woff < @as(usize, @intCast(filesize))) {
-                        const w = core.c.write(ofd, bytes.ptr + data_start + woff, @as(usize, @intCast(filesize)) - woff);
-                        if (w < 0) break;
-                        woff += @intCast(w);
-                    }
+                    core.writeAll(ofd, bytes[data_start..data_start + @as(usize, @intCast(filesize))]);
                     _ = core.c.close(ofd);
                 }
             }
@@ -193,58 +174,32 @@ fn doCreate() u8 {
         hexStr(@as(u32, @intCast(file.len + 1)), header_buf[94..102]);
         hexStr(0, header_buf[102..110]);
 
-        var off: usize = 0;
-        while (off < 110) {
-            const w = core.c.write(1, @as([*]u8, @ptrCast(&header_buf)) + off, 110 - off);
-            if (w < 0) return 1;
-            off += @intCast(w);
-        }
+        core.writeAll(1, header_buf[0..110]);
 
-        off = 0;
-        while (off < file.len + 1) {
-            const end = @min(off + 4096, file.len + 1);
-            const chunk = if (off < file.len) file[off..end] else "\x00";
-            const w = core.c.write(1, chunk.ptr, chunk.len);
-            if (w < 0) return 1;
-            off += chunk.len;
-        }
+        core.writeAll(1, file);
+        core.writeAll(1, "\x00");
         var zero: [4]u8 = .{0, 0, 0, 0};
         const npad = pad4(110 + file.len + 1);
         if (npad > 0) {
-            var woff: usize = 0;
-            while (woff < npad) {
-                const w = core.c.write(1, @as([*]u8, @ptrCast(&zero)) + woff, npad - woff);
-                if (w < 0) return 1;
-                woff += @intCast(w);
-            }
+            core.writeAll(1, zero[0..npad]);
         }
 
         if (st.st_mode & core.c.S_IFMT == core.c.S_IFREG) {
             const ffd = core.c.open(path_buf[0..file.len :0].ptr, core.c.O_RDONLY);
             if (ffd >= 0) {
                 defer _ = core.c.close(ffd);
-                var fbuf: [8192]u8 = undefined;
                 var remaining: usize = @intCast(@max(st.st_size, 0));
                 while (remaining > 0) {
-                    const to_read = @min(remaining, fbuf.len);
-                    const n = core.c.read(ffd, &fbuf, to_read);
-                    if (n <= 0) break;
-                    var woff: usize = 0;
-                    while (woff < @as(usize, @intCast(n))) {
-                        const w = core.c.write(1, @as([*]u8, @ptrCast(&fbuf)) + woff, @as(usize, @intCast(n)) - woff);
-                        if (w < 0) return 1;
-                        woff += @intCast(w);
-                    }
-                    remaining -= @intCast(n);
+                    const to_read = @min(remaining, 8192);
+                    const chunk = core.readAll(std.heap.page_allocator, ffd, to_read) catch break;
+                    defer std.heap.page_allocator.free(chunk);
+                    if (chunk.len == 0) break;
+                    core.writeAll(1, chunk);
+                    remaining -= chunk.len;
                 }
                 const dpad = pad4(@intCast(@max(st.st_size, 0)));
                 if (dpad > 0) {
-                    var woff: usize = 0;
-                    while (woff < dpad) {
-                        const w = core.c.write(1, @as([*]u8, @ptrCast(&zero)) + woff, dpad - woff);
-                        if (w < 0) return 1;
-                        woff += @intCast(w);
-                    }
+                    core.writeAll(1, zero[0..dpad]);
                 }
             }
         }
@@ -267,30 +222,15 @@ fn doCreate() u8 {
     hexStr(@as(u32, 11), header_buf[94..102]);
     hexStr(0, header_buf[102..110]);
 
-    var off: usize = 0;
-    while (off < 110) {
-        const w = core.c.write(1, @as([*]u8, @ptrCast(&header_buf)) + off, 110 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(1, header_buf[0..110]);
 
     const trailer_bytes: [11]u8 = .{ 'T', 'R', 'A', 'I', 'L', 'E', 'R', '!', '!', '!', 0 };
-    off = 0;
-    while (off < 11) {
-        const w = core.c.write(1, @as([*]const u8, @ptrCast(&trailer_bytes)) + off, 11 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(1, trailer_bytes[0..]);
 
     const npad = pad4(110 + 11);
     if (npad > 0) {
         var zero: [4]u8 = .{0, 0, 0, 0};
-        var woff: usize = 0;
-        while (woff < npad) {
-            const w = core.c.write(1, @as([*]u8, @ptrCast(&zero)) + woff, npad - woff);
-            if (w < 0) return 1;
-            woff += @intCast(w);
-        }
+        core.writeAll(1, zero[0..npad]);
     }
 
     for (file_names.items) |f| alloc.free(f);

@@ -73,11 +73,11 @@ fn doRetr(control: c_int, data_sock: c_int, name: []const u8) void {
     defer _ = core.c.close(fd);
 
     sendStr(control, "150 Opening data connection\r\n");
-    var buf: [4096]u8 = undefined;
     while (true) {
-        const n = core.c.read(fd, &buf, buf.len);
-        if (n <= 0) break;
-        _ = core.c.send(data_sock, &buf, @as(usize, @intCast(n)), 0);
+        const data = core.readAll(std.heap.page_allocator, fd, 4096) catch break;
+        defer std.heap.page_allocator.free(data);
+        if (data.len == 0) break;
+        _ = core.c.send(data_sock, data.ptr, data.len, 0);
     }
     _ = core.c.close(data_sock);
     sendStr(control, "226 Transfer complete\r\n");

@@ -45,7 +45,7 @@ pub fn main(args: [][]const u8) u8 {
 
 
     if (unit == 'h') {
-        _ = core.c.write(1, "               total        used        free      shared  buff/cache   available\n", 82);
+        core.writeAll(1, "               total        used        free      shared  buff/cache   available\n");
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Mem:    {d:>8.1}  {d:>8.1}  {d:>8.1}  {d:>8.1}  {d:>8.1}  {d:>8.1}\n", .{
             @as(f64, @floatFromInt(info.mem_total)) / 1024.0 / 1024.0,
@@ -55,15 +55,15 @@ pub fn main(args: [][]const u8) u8 {
             @as(f64, @floatFromInt(info.buffers + info.cached)) / 1024.0 / 1024.0,
             @as(f64, @floatFromInt(avail)) / 1024.0 / 1024.0,
         }) catch "";
-        _ = core.c.write(1, line.ptr, line.len);
+        core.writeAll(1, line);
         const line2 = std.fmt.bufPrint(&buf, "Swap:   {d:>8.1}  {d:>8.1}  {d:>8.1}\n", .{
             @as(f64, @floatFromInt(info.swap_total)) / 1024.0 / 1024.0,
             @as(f64, @floatFromInt(swap_used)) / 1024.0 / 1024.0,
             @as(f64, @floatFromInt(info.swap_free)) / 1024.0 / 1024.0,
         }) catch "";
-        _ = core.c.write(1, line2.ptr, line2.len);
+        core.writeAll(1, line2);
     } else {
-        _ = core.c.write(1, "               total        used        free      shared  buff/cache   available\n", 82);
+        core.writeAll(1, "               total        used        free      shared  buff/cache   available\n");
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Mem:    {d:>8}  {d:>8}  {d:>8}  {d:>8}  {d:>8}  {d:>8}\n", .{
             info.mem_total / div,
@@ -73,13 +73,13 @@ pub fn main(args: [][]const u8) u8 {
             (info.buffers + info.cached) / div,
             avail / div,
         }) catch "";
-        _ = core.c.write(1, line.ptr, line.len);
+        core.writeAll(1, line);
         const line2 = std.fmt.bufPrint(&buf, "Swap:   {d:>8}  {d:>8}  {d:>8}\n", .{
             info.swap_total / div,
             swap_used / div,
             info.swap_free / div,
         }) catch "";
-        _ = core.c.write(1, line2.ptr, line2.len);
+        core.writeAll(1, line2);
     }
 
     return 0;
@@ -90,10 +90,8 @@ fn parseMeminfo() ?MemInfo {
     if (fd < 0) return null;
     defer _ = core.c.close(fd);
 
-    var buf: [4096]u8 = undefined;
-    const n = core.c.read(fd, @as([*]u8, @ptrCast(&buf)), buf.len);
-    if (n <= 0) return null;
-    const data = buf[0..@intCast(n)];
+    const data = core.readAll(std.heap.page_allocator, fd, 4096) catch return null;
+    defer std.heap.page_allocator.free(data);
 
     var result = MemInfo{
         .mem_total = 0,

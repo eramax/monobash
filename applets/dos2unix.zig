@@ -29,12 +29,10 @@ pub fn main(args: [][]const u8) u8 {
     const fd = core.c.open(zpath[0..file.len :0].ptr, core.c.O_RDONLY);
     if (fd < 0) return core.die(1, "dos2unix: cannot open {s}\n", .{file});
 
-    var buf: [65536]u8 = undefined;
-    const n = core.c.read(fd, @as([*]u8, @ptrCast(&buf)), buf.len);
+    var data = core.readAll(std.heap.page_allocator, fd, 65536) catch return 1;
     _ = core.c.close(fd);
-    if (n <= 0) return 0;
-
-    const data = buf[0..@intCast(n)];
+    if (data.len == 0) return 0;
+    defer std.heap.page_allocator.free(data);
     var out_buf: [65536]u8 = undefined;
     var out_len: usize = 0;
 
@@ -78,7 +76,7 @@ pub fn main(args: [][]const u8) u8 {
     if (wfd < 0) return core.die(1, "dos2unix: cannot write {s}\n", .{file});
     defer _ = core.c.close(wfd);
 
-    _ = core.c.write(wfd, @as([*]u8, @ptrCast(&out_buf)), @intCast(out_len));
+    core.writeAll(wfd, out_buf[0..out_len]);
 
     return 0;
 }

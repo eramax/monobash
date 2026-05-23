@@ -30,10 +30,10 @@ pub fn main(args: [][]const u8) u8 {
 }
 
 fn coreWrite(fd: c_int, s: []const u8) void {
-    _ = core.c.write(fd, s.ptr, s.len);
+    core.writeAll(fd, s);
 }
 
 fn printField(fd: c_int, field: *const [65]u8) void {
     const len = std.mem.indexOfScalar(u8, field, @as(u8, 0)) orelse 65;
-    _ = core.c.write(fd, @as([*]const u8, @ptrCast(field)), len);
+    core.writeAll(fd, field[0..len]);
 }

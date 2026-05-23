@@ -8,11 +8,8 @@ pub fn main(args: [][]const u8) u8 {
     const msg = if (args.len > 1) blk: {
         break :blk std.mem.join(alloc, " ", args[1..]) catch return 1;
     } else blk: {
-        const buf = alloc.alloc(u8, 65536) catch return 1;
-        defer alloc.free(buf);
-        const n = core.c.read(0, buf.ptr, buf.len);
-        if (n <= 0) return 1;
-        break :blk buf[0..@intCast(n)];
+        const data = core.readAll(std.heap.page_allocator, 0, 65536) catch return 1;
+        break :blk data;
     };
     defer if (args.len > 1) alloc.free(msg);
     const d = core.c.opendir("/dev/pts");
@@ -37,10 +34,9 @@ pub fn main(args: [][]const u8) u8 {
         buf[sub.len] = 0;
         const fd = core.c.open(&buf, core.c.O_WRONLY);
         if (fd < 0) continue;
-        const header = "Message from sysadmin:\n";
-        _ = core.c.write(fd, header, header.len);
-        _ = core.c.write(fd, msg.ptr, msg.len);
-        _ = core.c.write(fd, "\n", 1);
+        core.writeAll(fd, "Message from sysadmin:\n");
+        core.writeAll(fd, msg);
+        core.writeAll(fd, "\n");
         _ = core.c.close(fd);
     }
     return 0;

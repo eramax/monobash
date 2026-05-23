@@ -56,7 +56,7 @@ pub fn main(args: [][]const u8) u8 {
         const argv = [_][*c]u8{ @as([*c]u8, @ptrCast(@constCast(&prog_z))), @as([*c]u8, @ptrCast(@constCast(&dev_z))), null };
         _ = execvp(@as([*c]u8, @ptrCast(&prog_z)), @as([*c][*c]u8, @ptrCast(&argv)));
         // If exec fails
-        _ = core.c.write(2, @as([*]const u8, @ptrCast("mkfs: exec failed\n")), 19);
+        core.writeAll(2, "mkfs: exec failed\n");
         std.process.exit(127);
     }
 

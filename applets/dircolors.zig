@@ -1,3 +1,4 @@
+const std = @import("std");
 const core = @import("core.zig");
 
 pub const meta = core.AppletMeta{ .name = "dircolors", .main = main };
@@ -27,13 +28,13 @@ const LS_COLORS =
 
 pub fn main(args: [][]const u8) u8 {
     _ = args;
-    var buf: [4096:0]u8 = undefined;
     const fd = core.c.open("/etc/DIR_COLORS\x00", core.c.O_RDONLY);
     if (fd >= 0) {
         defer _ = core.c.close(fd);
-        const n = core.c.read(fd, &buf, buf.len);
-        if (n > 0) {
-            core.writeAll(1, buf[0..@intCast(n)]);
+        const data = core.readAll(std.heap.page_allocator, fd, 4096) catch return 1;
+        defer std.heap.page_allocator.free(data);
+        if (data.len > 0) {
+            core.writeAll(1, data);
             return 0;
         }
     }

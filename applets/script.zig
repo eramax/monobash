@@ -69,24 +69,21 @@ pub fn main(args: [][]const u8) u8 {
     if (out_fd < 0) return core.die(1, "script: cannot open {s}\n", .{file_name});
 
     if (!quiet) {
-        _ = core.c.write(1, "Script started, output file: ", 29);
-        _ = core.c.write(1, file_name.ptr, file_name.len);
-        _ = core.c.write(1, "\n", 1);
+        core.writeAll(1, "Script started, output file: ");
+        core.writeAll(1, file_name);
+        core.writeAll(1, "\n");
     }
 
-    var buf: [4096]u8 = undefined;
     var fds = [_]c_int{ out_pipe[0], err_pipe[0] };
 
     loop: while (true) {
-        // Poll for readability (simple non-blocking loop)
         for (&fds) |fd| {
             if (fd < 0) continue;
-            const n = core.c.read(fd, @as([*]u8, @ptrCast(&buf)), buf.len);
-            if (n > 0) {
-                _ = core.c.write(out_fd, @as([*]u8, @ptrCast(&buf)), @intCast(n));
-                _ = core.c.write(1, @as([*]u8, @ptrCast(&buf)), @intCast(n));
-            } else if (n == 0) {
-                continue;
+            const data = core.readAll(std.heap.page_allocator, fd, 4096) catch continue;
+            defer std.heap.page_allocator.free(data);
+            if (data.len > 0) {
+                core.writeAll(out_fd, data);
+                core.writeAll(1, data);
             }
         }
 
@@ -105,9 +102,9 @@ pub fn main(args: [][]const u8) u8 {
     _ = core.c.close(err_pipe[0]);
 
     if (!quiet) {
-        _ = core.c.write(1, "Script done, output file: ", 26);
-        _ = core.c.write(1, file_name.ptr, file_name.len);
-        _ = core.c.write(1, "\n", 1);
+        core.writeAll(1, "Script done, output file: ");
+        core.writeAll(1, file_name);
+        core.writeAll(1, "\n");
     }
 
     return 0;

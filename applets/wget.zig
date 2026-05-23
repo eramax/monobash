@@ -78,7 +78,7 @@ pub fn main(args: [][]const u8) u8 {
     if (outfd < 0) return core.die(1, "wget: cannot write {s}\n", .{filename});
     defer _ = core.c.close(outfd);
 
-    _ = core.c.write(outfd, body.ptr, body.len);
+    core.writeAll(outfd, body);
 
     var msg: [256]u8 = undefined;
     const m = std.fmt.bufPrint(&msg, "wget: saved {d} bytes to {s}\n", .{ body.len, filename }) catch return 0;

@@ -8,7 +8,7 @@ pub fn main(args: [][]const u8) u8 {
     var line_buf: [4096]u8 = undefined;
 
     while (true) {
-        _ = core.c.write(1, "$ ", 2);
+        core.writeAll(1, "$ ");
         var pos: usize = 0;
         while (pos < line_buf.len) {
             var ch: u8 = 0;
@@ -27,16 +27,16 @@ pub fn main(args: [][]const u8) u8 {
             const dir = std.mem.trim(u8, line[3..], " \t");
             var zbuf: [4096:0]u8 = undefined;
             if (dir.len >= zbuf.len) {
-                _ = core.c.write(2, "cd: path too long\n", 18);
+                core.writeAll(2, "cd: path too long\n");
                 continue;
             }
             @memcpy(zbuf[0..dir.len], dir);
             zbuf[dir.len] = 0;
             if (core.c.chdir(zbuf[0..dir.len :0].ptr) < 0) {
-                _ = core.c.write(2, "cd: ", 4);
-                _ = core.c.write(2, dir.ptr, dir.len);
-                _ = core.c.write(2, ": ", 2);
-                _ = core.c.write(2, "No such file or directory\n", 26);
+                core.writeAll(2, "cd: ");
+                core.writeAll(2, dir);
+                core.writeAll(2, ": ");
+                core.writeAll(2, "No such file or directory\n");
             }
             continue;
         }
@@ -86,13 +86,13 @@ pub fn main(args: [][]const u8) u8 {
         const pid = core.c.fork();
         if (pid < 0) {
             alloc.free(c_argv);
-            _ = core.c.write(2, "fork failed\n", 12);
+            core.writeAll(2, "fork failed\n");
             continue;
         }
         if (pid == 0) {
             _ = core.c.execvp(c_argv[0], c_argv.ptr);
-            _ = core.c.write(2, c_argv[0], std.mem.len(c_argv[0]));
-            _ = core.c.write(2, ": command not found\n", 20);
+            core.writeAll(2, std.mem.sliceTo(c_argv[0], 0));
+            core.writeAll(2, ": command not found\n");
             core.c._exit(127);
         }
         var wstatus: c_int = 0;

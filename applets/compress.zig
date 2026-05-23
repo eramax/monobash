@@ -242,16 +242,7 @@ fn decompress(in_fd: c_int, out_fd: c_int) u8 {
 }
 
 fn readAllFd(alloc: std.mem.Allocator, fd: c_int) ![]u8 {
-    var buf = try alloc.alloc(u8, 65536);
-    var pos: usize = 0;
-    while (true) {
-        if (pos >= buf.len) buf = try alloc.realloc(buf, buf.len * 2);
-        const n = core.c.read(fd, buf.ptr + pos, buf.len - pos);
-        if (n < 0) return error.ReadError;
-        if (n == 0) break;
-        pos += @intCast(n);
-    }
-    return buf[0..pos];
+    return core.readAll(alloc, fd, 1 << 28);
 }
 
 pub fn main(args: [][]const u8) u8 {
