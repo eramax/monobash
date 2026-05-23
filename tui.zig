@@ -71,12 +71,12 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
             3 => {
                 len = 0;
                 cursor = 0;
-                _ = c.write(c.STDOUT_FILENO, "\n", 1);
+                _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
                 break;
             },
             4 => {
                 if (len == 0) {
-                    _ = c.write(c.STDOUT_FILENO, "\n", 1);
+                    _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
                     break;
                 }
             },
@@ -96,7 +96,7 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
                 }
             },
             10, 13 => {
-                _ = c.write(c.STDOUT_FILENO, "\n", 1);
+                _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
                 break;
             },
             27 => {
