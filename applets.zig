@@ -4,6 +4,12 @@ const c = @import("cimport.zig").c;
 
 // Import all applet modules — add new applets here
 const applets = struct {
+    const _zip = @import("applets/zip.zig");
+    const _zcat = @import("applets/zcat.zig");
+    const _unzip = @import("applets/unzip.zig");
+    const _rpm2cpio = @import("applets/rpm2cpio.zig");
+    const _cpio = @import("applets/cpio.zig");
+    const _compress = @import("applets/compress.zig");
     const _true = @import("applets/true.zig");
     const _false = @import("applets/false.zig");
     const _cat = @import("applets/cat.zig");
@@ -126,6 +132,29 @@ const applets = struct {
     const _runcon = @import("applets/runcon.zig");
     const _ptx = @import("applets/ptx.zig");
     const _mknod = @import("applets/mknod.zig");
+    const _crond = @import("applets/crond.zig");
+    const _crontab = @import("applets/crontab.zig");
+    const _syslogd = @import("applets/syslogd.zig");
+    const _kill = @import("applets/kill.zig");
+    const _passwd = @import("applets/passwd.zig");
+    const _adduser = @import("applets/adduser.zig");
+    const _addgroup = @import("applets/addgroup.zig");
+    const _su = @import("applets/su.zig");
+    const _login = @import("applets/login.zig");
+    const _reboot = @import("applets/reboot.zig");
+    const _halt = @import("applets/halt.zig");
+    const _poweroff = @import("applets/poweroff.zig");
+    const _init = @import("applets/init.zig");
+    const _modprobe = @import("applets/modprobe.zig");
+    const _modinfo = @import("applets/modinfo.zig");
+    const _ping = @import("applets/ping.zig");
+    const _ifconfig = @import("applets/ifconfig.zig");
+    const _nc = @import("applets/nc.zig");
+    const _nslookup = @import("applets/nslookup.zig");
+    const _wget = @import("applets/wget.zig");
+    const _route = @import("applets/route.zig");
+    const _arp = @import("applets/arp.zig");
+    const _ftp = @import("applets/ftp.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -265,6 +294,35 @@ const all_metas = &[_]core.AppletMeta{
     applets._runcon.meta,
     applets._ptx.meta,
     applets._mknod.meta,
+    applets._crond.meta,
+    applets._crontab.meta,
+    applets._syslogd.meta,
+    applets._kill.meta,
+    applets._passwd.meta,
+    applets._adduser.meta,
+    applets._addgroup.meta,
+    applets._su.meta,
+    applets._login.meta,
+    applets._reboot.meta,
+    applets._halt.meta,
+    applets._poweroff.meta,
+    applets._init.meta,
+    applets._modprobe.meta,
+    applets._modinfo.meta,
+    applets._ping.meta,
+    applets._ifconfig.meta,
+    applets._nc.meta,
+    applets._nslookup.meta,
+    applets._wget.meta,
+    applets._route.meta,
+    applets._arp.meta,
+    applets._ftp.meta,
+    applets._compress.meta,
+    applets._cpio.meta,
+    applets._rpm2cpio.meta,
+    applets._unzip.meta,
+    applets._zcat.meta,
+    applets._zip.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {

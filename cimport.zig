@@ -1,6 +1,7 @@
 /// Central C import for the entire monobash project.
 /// All files should import `c` from here instead of having their own @cImport.
 pub const c = @cImport({
+    @cDefine("_GNU_SOURCE", "1");
     @cInclude("unistd.h");
     @cInclude("sys/stat.h");
     @cInclude("sys/utsname.h");
@@ -22,4 +23,12 @@ pub const c = @cImport({
     @cInclude("regex.h");
     @cInclude("wordexp.h");
     @cInclude("tree_sitter/api.h");
+    @cInclude("sys/socket.h");
+    @cInclude("netinet/in.h");
+    @cInclude("arpa/inet.h");
+    @cInclude("netdb.h");
+    @cInclude("net/if.h");
+    @cInclude("sys/ioctl.h");
+    @cInclude("poll.h");
+    @cInclude("sys/time.h");
 });
