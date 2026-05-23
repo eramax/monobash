@@ -520,22 +520,123 @@ fn builtinSet(io: std.Io, args: [][]const u8) u8 {
             var_store.nounset = true;
         } else if (std.mem.eql(u8, arg, "+u")) {
             var_store.nounset = false;
-        } else if (std.mem.eql(u8, arg, "-o") and i + 1 < args.len) {
-            i += 1;
-            const opt = args[i];
-            if (std.mem.eql(u8, opt, "pipefail")) {
-                var_store.pipefail = true;
-            } else if (std.mem.eql(u8, opt, "errexit")) {
-                var_store.errexit = true;
+        } else if (std.mem.eql(u8, arg, "-o")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                const opt = args[i];
+                if (std.mem.eql(u8, opt, "pipefail")) {
+                    var_store.pipefail = true;
+                } else if (std.mem.eql(u8, opt, "errexit")) {
+                    var_store.errexit = true;
+                } else if (std.mem.eql(u8, opt, "nounset")) {
+                    var_store.nounset = true;
+                } else if (std.mem.eql(u8, opt, "noclobber")) {
+                    var_store.noclobber = true;
+                } else if (std.mem.eql(u8, opt, "allexport")) {
+                    var_store.allexport = true;
+                } else if (std.mem.eql(u8, opt, "notify")) {
+                    var_store.notify = true;
+                } else if (std.mem.eql(u8, opt, "ignoreeof")) {
+                    var_store.ignoreeof = true;
+                } else if (std.mem.eql(u8, opt, "monitor")) {
+                    var_store.monitor = true;
+                } else if (std.mem.eql(u8, opt, "noglob")) {
+                    var_store.noglob = true;
+                } else if (std.mem.eql(u8, opt, "noexec")) {
+                    var_store.noexec = true;
+                } else if (std.mem.eql(u8, opt, "verbose")) {
+                    var_store.verbose = true;
+                } else if (std.mem.eql(u8, opt, "vi")) {
+                    var_store.vi_mode = true;
+                    var_store.emacs_mode = false;
+                } else if (std.mem.eql(u8, opt, "emacs")) {
+                    var_store.emacs_mode = true;
+                    var_store.vi_mode = false;
+                }
+            } else {
+                // set -o with no argument: list all options
+                const stdout = std.Io.File.stdout();
+                const set_options = comptime [_]struct { name: []const u8, state: *const bool }{
+                    .{ .name = "allexport",  .state = &var_store.allexport },
+                    .{ .name = "errexit",    .state = &var_store.errexit },
+                    .{ .name = "ignoreeof",  .state = &var_store.ignoreeof },
+                    .{ .name = "monitor",    .state = &var_store.monitor },
+                    .{ .name = "noclobber",  .state = &var_store.noclobber },
+                    .{ .name = "noexec",     .state = &var_store.noexec },
+                    .{ .name = "noglob",     .state = &var_store.noglob },
+                    .{ .name = "notify",     .state = &var_store.notify },
+                    .{ .name = "nounset",    .state = &var_store.nounset },
+                    .{ .name = "pipefail",   .state = &var_store.pipefail },
+                    .{ .name = "verbose",    .state = &var_store.verbose },
+                    .{ .name = "vi",         .state = &var_store.vi_mode },
+                    .{ .name = "emacs",      .state = &var_store.emacs_mode },
+                };
+                for (set_options) |opt| {
+                    var buf: [128]u8 = undefined;
+                    const line = std.fmt.bufPrint(&buf, "{s}    \t{s}\n", .{ opt.name, if (opt.state.*) "on" else "off" }) catch continue;
+                    _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+                }
             }
-        } else if (std.mem.eql(u8, arg, "+o") and i + 1 < args.len) {
-            i += 1;
-            const opt = args[i];
-            if (std.mem.eql(u8, opt, "pipefail")) {
-                var_store.pipefail = false;
-            } else if (std.mem.eql(u8, opt, "errexit")) {
-                var_store.errexit = false;
+        } else if (std.mem.eql(u8, arg, "+o")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                const opt = args[i];
+                if (std.mem.eql(u8, opt, "pipefail")) {
+                    var_store.pipefail = false;
+                } else if (std.mem.eql(u8, opt, "errexit")) {
+                    var_store.errexit = false;
+                } else if (std.mem.eql(u8, opt, "nounset")) {
+                    var_store.nounset = false;
+                } else if (std.mem.eql(u8, opt, "noclobber")) {
+                    var_store.noclobber = false;
+                } else if (std.mem.eql(u8, opt, "allexport")) {
+                    var_store.allexport = false;
+                } else if (std.mem.eql(u8, opt, "notify")) {
+                    var_store.notify = false;
+                } else if (std.mem.eql(u8, opt, "ignoreeof")) {
+                    var_store.ignoreeof = false;
+                } else if (std.mem.eql(u8, opt, "monitor")) {
+                    var_store.monitor = false;
+                } else if (std.mem.eql(u8, opt, "noglob")) {
+                    var_store.noglob = false;
+                } else if (std.mem.eql(u8, opt, "noexec")) {
+                    var_store.noexec = false;
+                } else if (std.mem.eql(u8, opt, "verbose")) {
+                    var_store.verbose = false;
+                } else if (std.mem.eql(u8, opt, "vi")) {
+                    var_store.vi_mode = false;
+                } else if (std.mem.eql(u8, opt, "emacs")) {
+                    var_store.emacs_mode = false;
+                }
+            } else {
+                // set +o with no argument: list options in reusable format
+                const stdout = std.Io.File.stdout();
+                const set_options = comptime [_]struct { name: []const u8, state: *const bool }{
+                    .{ .name = "allexport",  .state = &var_store.allexport },
+                    .{ .name = "errexit",    .state = &var_store.errexit },
+                    .{ .name = "ignoreeof",  .state = &var_store.ignoreeof },
+                    .{ .name = "monitor",    .state = &var_store.monitor },
+                    .{ .name = "noclobber",  .state = &var_store.noclobber },
+                    .{ .name = "noexec",     .state = &var_store.noexec },
+                    .{ .name = "noglob",     .state = &var_store.noglob },
+                    .{ .name = "notify",     .state = &var_store.notify },
+                    .{ .name = "nounset",    .state = &var_store.nounset },
+                    .{ .name = "pipefail",   .state = &var_store.pipefail },
+                    .{ .name = "verbose",    .state = &var_store.verbose },
+                    .{ .name = "vi",         .state = &var_store.vi_mode },
+                    .{ .name = "emacs",      .state = &var_store.emacs_mode },
+                };
+                for (set_options) |opt| {
+                    var buf: [256]u8 = undefined;
+                    const flag = if (opt.state.*) "-o" else "+o";
+                    const line = std.fmt.bufPrint(&buf, "set {s} {s}\n", .{ flag, opt.name }) catch continue;
+                    _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+                }
             }
+        } else if (std.mem.eql(u8, arg, "-x")) {
+            var_store.xtrace = true;
+        } else if (std.mem.eql(u8, arg, "+x")) {
+            var_store.xtrace = false;
         } else if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
             const name = arg[0..eq];
             const value = arg[eq + 1 ..];
@@ -1341,19 +1442,88 @@ pub var shopt_nullglob: bool = false;
 pub var shopt_dotglob: bool = false;
 pub var shopt_extglob: bool = false;
 pub var shopt_nocaseglob: bool = false;
+pub var shopt_autocd: bool = false;
+pub var shopt_cdable_vars: bool = false;
+pub var shopt_cdspell: bool = false;
+pub var shopt_checkhash: bool = false;
+pub var shopt_checkwinsize: bool = false;
+pub var shopt_cmdhist: bool = false;
+pub var shopt_globstar: bool = false;
+pub var shopt_histexpand: bool = false;
+pub var shopt_hostcomplete: bool = false;
+pub var shopt_huponexit: bool = false;
+pub var shopt_lithist: bool = false;
+pub var shopt_mailwarn: bool = false;
+pub var shopt_no_empty_cmd_completion: bool = false;
+pub var shopt_progcomp: bool = false;
+pub var shopt_promptvars: bool = false;
+pub var shopt_sourcepath: bool = false;
+pub var shopt_xpg_echo: bool = false;
+
+fn shoptGetOpt(name: []const u8) ?*bool {
+    if (std.mem.eql(u8, name, "nullglob")) return &shopt_nullglob;
+    if (std.mem.eql(u8, name, "dotglob")) return &shopt_dotglob;
+    if (std.mem.eql(u8, name, "extglob")) return &shopt_extglob;
+    if (std.mem.eql(u8, name, "nocaseglob")) return &shopt_nocaseglob;
+    if (std.mem.eql(u8, name, "autocd")) return &shopt_autocd;
+    if (std.mem.eql(u8, name, "cdable_vars")) return &shopt_cdable_vars;
+    if (std.mem.eql(u8, name, "cdspell")) return &shopt_cdspell;
+    if (std.mem.eql(u8, name, "checkhash")) return &shopt_checkhash;
+    if (std.mem.eql(u8, name, "checkwinsize")) return &shopt_checkwinsize;
+    if (std.mem.eql(u8, name, "cmdhist")) return &shopt_cmdhist;
+    if (std.mem.eql(u8, name, "globstar")) return &shopt_globstar;
+    if (std.mem.eql(u8, name, "histexpand")) return &shopt_histexpand;
+    if (std.mem.eql(u8, name, "hostcomplete")) return &shopt_hostcomplete;
+    if (std.mem.eql(u8, name, "huponexit")) return &shopt_huponexit;
+    if (std.mem.eql(u8, name, "lithist")) return &shopt_lithist;
+    if (std.mem.eql(u8, name, "mailwarn")) return &shopt_mailwarn;
+    if (std.mem.eql(u8, name, "no_empty_cmd_completion")) return &shopt_no_empty_cmd_completion;
+    if (std.mem.eql(u8, name, "progcomp")) return &shopt_progcomp;
+    if (std.mem.eql(u8, name, "promptvars")) return &shopt_promptvars;
+    if (std.mem.eql(u8, name, "sourcepath")) return &shopt_sourcepath;
+    if (std.mem.eql(u8, name, "xpg_echo")) return &shopt_xpg_echo;
+    return null;
+}
+
+const shopt_all_options = [_]struct { name: []const u8, state: *bool }{
+    .{ .name = "dotglob",              .state = &shopt_dotglob },
+    .{ .name = "extglob",              .state = &shopt_extglob },
+    .{ .name = "nocaseglob",           .state = &shopt_nocaseglob },
+    .{ .name = "nullglob",             .state = &shopt_nullglob },
+    .{ .name = "autocd",               .state = &shopt_autocd },
+    .{ .name = "cdable_vars",          .state = &shopt_cdable_vars },
+    .{ .name = "cdspell",              .state = &shopt_cdspell },
+    .{ .name = "checkhash",            .state = &shopt_checkhash },
+    .{ .name = "checkwinsize",         .state = &shopt_checkwinsize },
+    .{ .name = "cmdhist",              .state = &shopt_cmdhist },
+    .{ .name = "globstar",             .state = &shopt_globstar },
+    .{ .name = "histexpand",           .state = &shopt_histexpand },
+    .{ .name = "hostcomplete",         .state = &shopt_hostcomplete },
+    .{ .name = "huponexit",            .state = &shopt_huponexit },
+    .{ .name = "lithist",              .state = &shopt_lithist },
+    .{ .name = "mailwarn",             .state = &shopt_mailwarn },
+    .{ .name = "no_empty_cmd_completion", .state = &shopt_no_empty_cmd_completion },
+    .{ .name = "progcomp",             .state = &shopt_progcomp },
+    .{ .name = "promptvars",           .state = &shopt_promptvars },
+    .{ .name = "sourcepath",           .state = &shopt_sourcepath },
+    .{ .name = "xpg_echo",             .state = &shopt_xpg_echo },
+};
 
 fn builtinShopt(io: std.Io, args: [][]const u8) u8 {
+    const stdout = std.Io.File.stdout();
     if (args.len == 1) {
-        const stdout = std.Io.File.stdout();
-        const options = comptime [_]struct { name: []const u8, state: *bool }{
-            .{ .name = "dotglob",    .state = &shopt_dotglob },
-            .{ .name = "extglob",    .state = &shopt_extglob },
-            .{ .name = "nocaseglob", .state = &shopt_nocaseglob },
-            .{ .name = "nullglob",   .state = &shopt_nullglob },
-        };
-        for (options) |opt| {
+        for (shopt_all_options) |opt| {
             var buf: [128]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "{s}    \t{s}\n", .{ opt.name, if (opt.state.*) "on" else "off" }) catch continue;
+            _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
+        }
+        return 0;
+    }
+    if (args.len == 2) {
+        const opt = args[1];
+        if (shoptGetOpt(opt)) |state| {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}    \t{s}\n", .{ opt, if (state.*) "on" else "off" }) catch "error\n";
             _ = std.Io.File.writeStreamingAll(stdout, io, line) catch {};
         }
         return 0;
@@ -1361,14 +1531,9 @@ fn builtinShopt(io: std.Io, args: [][]const u8) u8 {
     if (args.len >= 3) {
         const flag = args[1];
         const opt = args[2];
-        if (std.mem.eql(u8, opt, "nullglob")) {
-            shopt_nullglob = std.mem.eql(u8, flag, "-s");
-        } else if (std.mem.eql(u8, opt, "dotglob")) {
-            shopt_dotglob = std.mem.eql(u8, flag, "-s");
-        } else if (std.mem.eql(u8, opt, "extglob")) {
-            shopt_extglob = std.mem.eql(u8, flag, "-s");
-        } else if (std.mem.eql(u8, opt, "nocaseglob")) {
-            shopt_nocaseglob = std.mem.eql(u8, flag, "-s");
+        const on = std.mem.eql(u8, flag, "-s");
+        if (shoptGetOpt(opt)) |state| {
+            state.* = on;
         }
     }
     return 0;

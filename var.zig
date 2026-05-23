@@ -25,6 +25,42 @@ pub var nounset_error: bool = false;
 pub var pipefail: bool = false;
 pub var interactive: bool = false;
 pub var command_flag: bool = false;
+pub var xtrace: bool = false;
+
+// $FUNCNAME, $BASH_SOURCE, $BASH_LINENO stacks
+pub var funcname_stack: std.ArrayListAligned([]const u8, null) = .empty;
+pub var source_stack: std.ArrayListAligned([]const u8, null) = .empty;
+pub var lineno_stack: std.ArrayListAligned(usize, null) = .empty;
+
+// set -o additional options
+pub var noclobber: bool = false;
+pub var allexport: bool = false;
+pub var notify: bool = false;
+pub var ignoreeof: bool = false;
+pub var monitor: bool = false;
+pub var noglob: bool = false;
+pub var noexec: bool = false;
+pub var verbose: bool = false;
+pub var vi_mode: bool = false;
+pub var emacs_mode: bool = false;
+
+// shopt options - additional 16+ options beyond the 4 in builtins.zig
+pub var shopt_histexpand: bool = false;
+pub var shopt_cmdhist: bool = true;
+pub var shopt_cdable_vars: bool = false;
+pub var shopt_cdspell: bool = false;
+pub var shopt_checkhash: bool = false;
+pub var shopt_checkwinsize: bool = false;
+pub var shopt_globstar: bool = false;
+pub var shopt_hostcomplete: bool = false;
+pub var shopt_huponexit: bool = false;
+pub var shopt_lithist: bool = false;
+pub var shopt_mailwarn: bool = false;
+pub var shopt_no_empty_cmd_completion: bool = false;
+pub var shopt_progcomp: bool = false;
+pub var shopt_promptvars: bool = false;
+pub var shopt_sourcepath: bool = true;
+pub var shopt_xpg_echo: bool = false;
 
 pub fn init(allocator: std.mem.Allocator) void {
     global_arena = std.heap.ArenaAllocator.init(allocator);
@@ -106,6 +142,14 @@ pub fn init(allocator: std.mem.Allocator) void {
     const shlvl_str = std.fmt.bufPrint(&shlvl_buf, "{d}", .{shlvl + 1}) catch "1";
     _ = set("SHLVL", shlvl_str, false);
 
+    // Initialize stacks
+    funcname_stack = std.ArrayListAligned([]const u8, null).empty;
+    source_stack = std.ArrayListAligned([]const u8, null).empty;
+    lineno_stack = std.ArrayListAligned(usize, null).empty;
+    // Push initial frame for top-level
+    source_stack.append(arena, allocValue("")) catch {};
+    lineno_stack.append(arena, 0) catch {};
+
     // Static / initial values
     _ = set("LINENO", "1", false);
 
@@ -122,6 +166,9 @@ pub fn init(allocator: std.mem.Allocator) void {
     }
     // OLDPWD — initially unset (bash behavior)
     _ = set("OLDPWD", "", false);
+
+    // PIPESTATUS — initially empty
+    _ = set("PIPESTATUS", "", false);
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -427,6 +474,48 @@ pub fn allVars() []const VarEntry {
     return result.items;
 }
 
+// FUNCNAME stack helpers
+pub fn pushFuncName(name: []const u8) void {
+    funcname_stack.append(global_arena.allocator(), allocValue(name)) catch {};
+}
+
+pub fn popFuncName() void {
+    if (funcname_stack.items.len > 0) {
+        _ = funcname_stack.pop();
+    }
+}
+
+pub fn getFuncNameStack() []const []const u8 {
+    return funcname_stack.items;
+}
+
+pub fn getFuncNameDepth() usize {
+    return funcname_stack.items.len;
+}
+
+// BASH_SOURCE / BASH_LINENO stack helpers
+pub fn pushSourceInfo(source: []const u8, lineno: usize) void {
+    source_stack.append(global_arena.allocator(), allocValue(source)) catch {};
+    lineno_stack.append(global_arena.allocator(), lineno) catch {};
+}
+
+pub fn popSourceInfo() void {
+    if (source_stack.items.len > 0) {
+        _ = source_stack.pop();
+    }
+    if (lineno_stack.items.len > 0) {
+        _ = lineno_stack.pop();
+    }
+}
+
+pub fn getSourceStack() []const []const u8 {
+    return source_stack.items;
+}
+
+pub fn getLinenoStack() []const usize {
+    return lineno_stack.items;
+}
+
 pub fn getSpecial(c: u8) []const u8 {
     switch (c) {
         '?' => return std.fmt.allocPrint(global_arena.allocator(), "{d}", .{exit_status}) catch "0",
@@ -441,6 +530,7 @@ pub fn getSpecial(c: u8) []const u8 {
             buf[pos] = 'h'; pos += 1;
             if (errexit) { buf[pos] = 'e'; pos += 1; }
             if (nounset) { buf[pos] = 'u'; pos += 1; }
+            if (xtrace) { buf[pos] = 'x'; pos += 1; }
             buf[pos] = 'B'; pos += 1;
             if (command_flag) { buf[pos] = 'c'; pos += 1; }
             return global_arena.allocator().dupe(u8, buf[0..pos]) catch "hBc";

@@ -677,6 +677,36 @@ fn expandPositional(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
                 i += 2;
                 continue;
             }
+            // Handle bare $FUNCNAME, $BASH_SOURCE, $BASH_LINENO
+            if (std.ascii.isAlphabetic(raw[i + 1]) or raw[i + 1] == '_') {
+                var end = i + 2;
+                while (end < raw.len and (std.ascii.isAlphanumeric(raw[end]) or raw[end] == '_')) : (end += 1) {}
+                const vname = raw[i + 1 .. end];
+                if (std.mem.eql(u8, vname, "FUNCNAME")) {
+                    const stack = var_store.getFuncNameStack();
+                    const val = if (stack.len > 0) stack[stack.len - 1] else "";
+                    try result.appendSlice(allocator, val);
+                    i = end;
+                    continue;
+                }
+                if (std.mem.eql(u8, vname, "BASH_SOURCE")) {
+                    const stack = var_store.getSourceStack();
+                    const val = if (stack.len > 0) stack[stack.len - 1] else "";
+                    try result.appendSlice(allocator, val);
+                    i = end;
+                    continue;
+                }
+                if (std.mem.eql(u8, vname, "BASH_LINENO")) {
+                    const stack = var_store.getLinenoStack();
+                    if (stack.len > 0) {
+                        var lbuf: [32]u8 = undefined;
+                        const val = std.fmt.bufPrint(&lbuf, "{d}", .{stack[stack.len - 1]}) catch "0";
+                        try result.appendSlice(allocator, val);
+                    }
+                    i = end;
+                    continue;
+                }
+            }
         }
         result.appendAssumeCapacity(raw[i]);
         i += 1;
@@ -719,6 +749,14 @@ fn getSimpleVarValue(name: []const u8) ?[]const u8 {
             '1'...'9' => return var_store.getPositionalValue(name[0] - '1'),
             else => {},
         }
+    }
+    if (std.mem.eql(u8, name, "FUNCNAME")) {
+        const stack = var_store.getFuncNameStack();
+        return if (stack.len > 0) stack[stack.len - 1] else "";
+    }
+    if (std.mem.eql(u8, name, "BASH_SOURCE")) {
+        const stack = var_store.getSourceStack();
+        return if (stack.len > 0) stack[stack.len - 1] else "";
     }
     if (var_store.get(name)) |v| return v.value;
     return null;
@@ -801,16 +839,135 @@ fn handleParamInner(allocator: std.mem.Allocator, content: []const u8) WordExpEr
     if (pos == name_start) return error.Syntax;
     const name = content[name_start..pos];
 
+    // Check for array subscript syntax [N], [@], [*] for FUNCNAME, BASH_SOURCE, BASH_LINENO
+    if (pos < content.len and content[pos] == '[') {
+        const rest = content[pos..];
+        const close = std.mem.indexOfScalar(u8, rest, ']');
+        if (close) |close_pos| {
+            const idx_str = rest[1..close_pos];
+            const is_funcname = std.mem.eql(u8, name, "FUNCNAME");
+            const is_source = std.mem.eql(u8, name, "BASH_SOURCE");
+            const is_lineno = std.mem.eql(u8, name, "BASH_LINENO");
+            if (is_funcname or is_source or is_lineno) {
+                const stacks: []const []const u8 = if (is_funcname)
+                    var_store.getFuncNameStack()
+                else if (is_source)
+                    var_store.getSourceStack()
+                else
+                    @as([]const []const u8, &.{});
+                const lineno_items = var_store.getLinenoStack();
+                if (std.mem.eql(u8, idx_str, "@") or std.mem.eql(u8, idx_str, "*")) {
+                    if (hash) {
+                        const count = if (is_lineno) lineno_items.len else stacks.len;
+                        var buf: [32]u8 = undefined;
+                        const len_str = std.fmt.bufPrint(&buf, "{d}", .{count}) catch "0";
+                        return allocator.dupe(u8, len_str);
+                    }
+                    if (is_lineno) {
+                        var result = std.ArrayListAligned(u8, null).empty;
+                        var i: usize = lineno_items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            if (result.items.len > 0) try result.append(allocator, ' ');
+                            var buf: [32]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{lineno_items[i]}) catch "0";
+                            try result.appendSlice(allocator, s);
+                        }
+                        return result.toOwnedSlice(allocator);
+                    }
+                    var result = std.ArrayListAligned(u8, null).empty;
+                    var i: usize = stacks.len;
+                    while (i > 0) {
+                        i -= 1;
+                        if (result.items.len > 0) try result.append(allocator, ' ');
+                        try result.appendSlice(allocator, stacks[i]);
+                    }
+                    return result.toOwnedSlice(allocator);
+                }
+                if (is_lineno) {
+                    const idx = std.fmt.parseInt(usize, idx_str, 10) catch 0;
+                    // bash indexes from the most recent frame: [0] = current
+                    const rev_idx = lineno_items.len - 1 - idx;
+                    if (rev_idx < lineno_items.len) {
+                        var buf: [32]u8 = undefined;
+                        const s = std.fmt.bufPrint(&buf, "{d}", .{lineno_items[rev_idx]}) catch "0";
+                        return allocator.dupe(u8, s);
+                    }
+                    return allocator.dupe(u8, "");
+                }
+                const idx = std.fmt.parseInt(usize, idx_str, 10) catch 0;
+                // bash indexes from the most recent frame: [0] = current function
+                if (idx < stacks.len) {
+                    return allocator.dupe(u8, stacks[stacks.len - 1 - idx]);
+                }
+                return allocator.dupe(u8, "");
+            }
+        }
+    }
+
     if (hash) {
+        if (std.mem.eql(u8, name, "BASH_LINENO")) {
+            const stack = var_store.getLinenoStack();
+            if (stack.len > 0) {
+                var lbuf: [32]u8 = undefined;
+                var val_buf: [32]u8 = undefined;
+                const val = std.fmt.bufPrint(&val_buf, "{d}", .{stack[stack.len - 1]}) catch "0";
+                const len_str = std.fmt.bufPrint(&lbuf, "{d}", .{val.len}) catch "0";
+                return allocator.dupe(u8, len_str);
+            }
+            return allocator.dupe(u8, "1");
+        }
         const val = getSimpleVarValue(name) orelse "";
         var buf: [32]u8 = undefined;
         const len_str = std.fmt.bufPrint(&buf, "{d}", .{val.len}) catch "0";
         return allocator.dupe(u8, len_str);
     }
 
+    // Handle array subscript: name[index]
+    if (pos < content.len and content[pos] == '[') {
+        pos += 1;
+        const idx_start = pos;
+        while (pos < content.len and content[pos] != ']') : (pos += 1) {}
+        if (pos >= content.len) return error.Syntax;
+        const idx_str = content[idx_start..pos];
+        pos += 1; // skip ]
+
+        const val = if (var_store.get(name)) |v| v.value else "";
+        if (std.mem.eql(u8, idx_str, "@") or std.mem.eql(u8, idx_str, "*")) {
+            return allocator.dupe(u8, val);
+        }
+        const idx = std.fmt.parseInt(usize, idx_str, 10) catch return allocator.dupe(u8, "");
+        var split = std.mem.splitScalar(u8, val, ' ');
+        var i: usize = 0;
+        while (split.next()) |part| {
+            if (i == idx) return allocator.dupe(u8, part);
+            i += 1;
+        }
+        return allocator.dupe(u8, "");
+    }
+
     if (pos >= content.len) {
         if (var_store.get(name)) |v| {
             return allocator.dupe(u8, v.value);
+        }
+        // Handle bare FUNCNAME, BASH_SOURCE, BASH_LINENO (${name} without subscript)
+        if (std.mem.eql(u8, name, "FUNCNAME")) {
+            const stack = var_store.getFuncNameStack();
+            const val = if (stack.len > 0) stack[stack.len - 1] else "";
+            return allocator.dupe(u8, val);
+        }
+        if (std.mem.eql(u8, name, "BASH_SOURCE")) {
+            const stack = var_store.getSourceStack();
+            const val = if (stack.len > 0) stack[stack.len - 1] else "";
+            return allocator.dupe(u8, val);
+        }
+        if (std.mem.eql(u8, name, "BASH_LINENO")) {
+            const stack = var_store.getLinenoStack();
+            if (stack.len > 0) {
+                var lbuf: [32]u8 = undefined;
+                return allocator.dupe(u8, std.fmt.bufPrint(&lbuf, "{d}", .{stack[stack.len - 1]}) catch "0");
+            }
+            return allocator.dupe(u8, "0");
         }
         if (name.len == 1) {
             switch (name[0]) {

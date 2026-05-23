@@ -22,6 +22,8 @@ var break_requested: usize = 0;
 var continue_requested: usize = 0;
 var return_requested: bool = false;
 var return_value: u8 = 0;
+var in_conditional: usize = 0;
+var in_err_trap: bool = false;
 
 pub fn init(alloc: std.mem.Allocator) void {
     allocator = alloc;
@@ -80,6 +82,50 @@ fn fireExitTrap(io: std.Io) void {
     }
 }
 
+fn fireErrTrap(io: std.Io) void {
+    if (in_err_trap) return;
+    if (builtins.getTrap("ERR")) |cmd| {
+        if (cmd.len == 0) return;
+        in_err_trap = true;
+        defer in_err_trap = false;
+        const cmd_z = allocator.dupeZ(u8, cmd) catch return;
+        defer allocator.free(cmd_z);
+        if (parser.parseString(cmd_z)) |trap_tree| {
+            defer parser.treeDelete(trap_tree);
+            _ = execNode(io, parser.rootNode(trap_tree), cmd);
+        }
+    }
+}
+
+var in_debug_trap: bool = false;
+
+fn fireDebugTrap(io: std.Io) void {
+    if (in_debug_trap) return;
+    if (builtins.getTrap("DEBUG")) |cmd| {
+        if (cmd.len == 0) return;
+        in_debug_trap = true;
+        defer in_debug_trap = false;
+        const cmd_z = allocator.dupeZ(u8, cmd) catch return;
+        defer allocator.free(cmd_z);
+        if (parser.parseString(cmd_z)) |trap_tree| {
+            defer parser.treeDelete(trap_tree);
+            _ = execNode(io, parser.rootNode(trap_tree), cmd);
+        }
+    }
+}
+
+fn fireReturnTrap(io: std.Io) void {
+    if (builtins.getTrap("RETURN")) |cmd| {
+        if (cmd.len == 0) return;
+        const cmd_z = allocator.dupeZ(u8, cmd) catch return;
+        defer allocator.free(cmd_z);
+        if (parser.parseString(cmd_z)) |trap_tree| {
+            defer parser.treeDelete(trap_tree);
+            _ = execNode(io, parser.rootNode(trap_tree), cmd);
+        }
+    }
+}
+
 fn nodeText(node: NodeType, source: []const u8) []const u8 {
     return parser.getNodeText(node, source);
 }
@@ -89,6 +135,9 @@ fn nodeName(node: NodeType) []const u8 {
 }
 
 fn execNode(io: std.Io, node: NodeType, source: []const u8) u8 {
+    // Fire DEBUG trap before command execution
+    fireDebugTrap(io);
+
     const status = execNodeInner(io, node, source);
     recordExitStatus(status);
     return status;
@@ -264,14 +313,18 @@ fn execList(io: std.Io, node: NodeType, source: []const u8) u8 {
             const next = parser.childAt(node, i + 1);
             const next_name = nodeName(next);
             if (std.mem.eql(u8, next_name, "&&")) {
+                in_conditional += 1;
                 const status = execNode(io, child, source);
+                in_conditional -= 1;
                 last = status;
                 if (status != 0) break; // short-circuit: && fails
                 i += 2;
                 continue;
             }
             if (std.mem.eql(u8, next_name, "||")) {
+                in_conditional += 1;
                 const status = execNode(io, child, source);
+                in_conditional -= 1;
                 last = status;
                 if (status == 0) break; // short-circuit: || succeeds
                 i += 2;
@@ -445,6 +498,22 @@ fn execSimpleCommand(io: std.Io, node: NodeType, source: []const u8) u8 {
         i += 1;
     }
 
+    // xtrace: print expanded command to stderr
+    if (var_store.xtrace) {
+        const ps4 = if (var_store.get("PS4")) |v| v.value else "+ ";
+        var xtrace_buf: [4096]u8 = undefined;
+        var xtrace_pos: usize = 0;
+        @memcpy(xtrace_buf[0..ps4.len], ps4);
+        xtrace_pos += ps4.len;
+        for (expanded.items, 0..) |word, wi| {
+            if (wi > 0) { xtrace_buf[xtrace_pos] = ' '; xtrace_pos += 1; }
+            @memcpy(xtrace_buf[xtrace_pos..][0..word.len], word);
+            xtrace_pos += word.len;
+        }
+        xtrace_buf[xtrace_pos] = '\n';
+        _ = c.write(2, &xtrace_buf, xtrace_pos + 1);
+    }
+
     // If there are redirects, process them without fork
     if (redirects.items.len > 0) {
         // Save current fds
@@ -531,8 +600,17 @@ fn execSimpleCommandInner(io: std.Io, cmd_name: []const u8, expanded: [][]const 
             } else {
                 var_store.setPositional(allocator, &.{});
             }
+            // Push function name onto FUNCNAME stack
+            var_store.pushFuncName(cmd_name);
+            // Push source/lineno info
+            var_store.pushSourceInfo("", 0);
             const body = parser.namedChild(fn_node, 1);
             const body_result = execNode(io, body, source);
+            // Pop function name
+            var_store.popFuncName();
+            var_store.popSourceInfo();
+            // Fire RETURN trap on function return
+            fireReturnTrap(io);
             if (return_requested) {
                 return_requested = false;
                 const saved = return_value;
@@ -588,16 +666,22 @@ fn execSimpleCommandInner(io: std.Io, cmd_name: []const u8, expanded: [][]const 
 
     // Check builtins first
     if (builtins.lookup(cmd_name)) |_| {
-        return builtins.run(io, cmd_name, expanded);
+        const st = builtins.run(io, cmd_name, expanded);
+        if (st != 0 and in_conditional == 0) fireErrTrap(io);
+        return st;
     }
 
     // Check applets (NOEXEC)
     if (applets.lookup(cmd_name)) |_| {
-        return applets.run(io, cmd_name, expanded);
+        const st = applets.run(io, cmd_name, expanded);
+        if (st != 0 and in_conditional == 0) fireErrTrap(io);
+        return st;
     }
 
     // Try external command via fork+execvp
-    return execExternal(cmd_name, expanded);
+    const st = execExternal(cmd_name, expanded);
+    if (st != 0 and in_conditional == 0) fireErrTrap(io);
+    return st;
 }
 
 fn execExternal(cmd: []const u8, args: [][]const u8) u8 {
@@ -649,7 +733,9 @@ fn execIf(io: std.Io, node: NodeType, source: []const u8) u8 {
             const enc = parser.namedChildCount(child);
             if (enc >= 2) {
                 const econd = parser.namedChild(child, 0);
+                in_conditional += 1;
                 const estatus = execNode(io, econd, source);
+                in_conditional -= 1;
                 if (estatus == 0) {
                     const ebody = parser.namedChild(child, 1);
                     return execNode(io, ebody, source);
@@ -674,7 +760,9 @@ fn execIf(io: std.Io, node: NodeType, source: []const u8) u8 {
             }
         } else if (idx == 0) {
             // First named child = condition
+            in_conditional += 1;
             const status = execNode(io, child, source);
+            in_conditional -= 1;
             if (status == 0 and ncount > 1) {
                 const body = parser.namedChild(node, 1);
                 return execNode(io, body, source);
@@ -877,7 +965,9 @@ fn execWhile(io: std.Io, node: NodeType, source: []const u8) u8 {
     var iter_count: u32 = 0;
     while (iter_count < 1000000) : (iter_count += 1) {
 
+        in_conditional += 1;
         const cond_status = execNode(io, condition, source);
+        in_conditional -= 1;
         const cond_true = (cond_status == 0);
 
         if (is_until) {
@@ -1005,6 +1095,18 @@ fn execPipeline(io: std.Io, node: NodeType, source: []const u8) u8 {
         }
     }
 
+    // Store PIPESTATUS (all statuses space-separated)
+    {
+        var pipe_buf: [512]u8 = undefined;
+        var pipe_pos: usize = 0;
+        for (statuses.items, 0..) |s, i| {
+            if (i > 0) { pipe_buf[pipe_pos] = ' '; pipe_pos += 1; }
+            const s_str = std.fmt.bufPrint(pipe_buf[pipe_pos..], "{d}", .{s}) catch "0";
+            pipe_pos += s_str.len;
+        }
+        _ = var_store.set("PIPESTATUS", pipe_buf[0..pipe_pos], false);
+    }
+
     const result = if (var_store.pipefail) blk: {
         var r: u8 = 0;
         for (statuses.items) |s| {
@@ -1013,6 +1115,7 @@ fn execPipeline(io: std.Io, node: NodeType, source: []const u8) u8 {
         break :blk r;
     } else last_status;
     recordExitStatus(result);
+    if (result != 0 and in_conditional == 0) fireErrTrap(io);
     return result;
 }
 
@@ -1395,7 +1498,9 @@ fn execNegated(io: std.Io, node: NodeType, source: []const u8) u8 {
     const count = parser.namedChildCount(node);
     if (count == 0) return 0;
     const child = parser.namedChild(node, 0);
+    in_conditional += 1;
     const status = execNode(io, child, source);
+    in_conditional -= 1;
     const result: u8 = if (status == 0) 1 else 0;
     recordExitStatus(result);
     return result;
@@ -2173,7 +2278,10 @@ fn execBuiltinSource(io: std.Io, args: [][]const u8) u8 {
         return 1;
     };
     defer parser.treeDelete(tree);
+    // Push BASH_SOURCE info for sourced file
+    var_store.pushSourceInfo(path, 1);
     const result = exec(io, tree, content);
+    var_store.popSourceInfo();
 
     // Restore old positional params
     var_store.setPositional(allocator, old_params.items);
