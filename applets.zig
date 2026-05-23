@@ -21,6 +21,7 @@ const applets = struct {
     const _uname = @import("applets/uname.zig");
     const _hostname = @import("applets/hostname.zig");
     const _env = @import("applets/env.zig");
+    const _printf = @import("applets/printf.zig");
     const _printenv = @import("applets/printenv.zig");
     const _basename = @import("applets/basename.zig");
     const _dirname = @import("applets/dirname.zig");
@@ -290,6 +291,7 @@ const all_metas = &[_]core.AppletMeta{
     applets._hostname.meta,
     applets._env.meta,
     applets._printenv.meta,
+    applets._printf.meta,
     applets._basename.meta,
     applets._dirname.meta,
     applets._whoami.meta,

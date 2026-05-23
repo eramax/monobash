@@ -3,21 +3,117 @@ const core = @import("core.zig");
 pub const meta = core.AppletMeta{ .name = "test", .main = main };
 
 pub fn main(args: [][]const u8) u8 {
-    if (args.len == 1) return 1;
-    if (args.len == 2) return testUnary(args[1]);
-    if (args.len == 3) {
-        if (std.mem.eql(u8, args[1], "!"))
-            return if (testUnary(args[2]) == 0) 1 else 0;
-        return testUnaryOp(args[1], args[2]);
+    const a = args[1..];
+    if (a.len == 0) return 1;
+    if (a.len == 1) return if (a[0].len > 0) 0 else 1;
+    if (a.len == 2) {
+        if (std.mem.eql(u8, a[0], "!")) {
+            const r = testUnary(a[1]);
+            return if (r == 0) 1 else 0;
+        }
+        return testUnaryOp(a[0], a[1]);
     }
-    if (args.len == 4) {
-        if (std.mem.eql(u8, args[1], "!"))
-            return if (testUnaryOp(args[2], args[3]) == 0) 1 else 0;
-        return testBinary(args[1], args[2], args[3]);
+    if (a.len == 3) {
+        if (isBinaryOp(a[1])) return testBinary(a[0], a[1], a[2]);
+        if (std.mem.eql(u8, a[0], "!")) {
+            const r = testUnary(a[1]);
+            return if (r == 0) 1 else 0;
+        }
+        if (std.mem.eql(u8, a[0], "(") and std.mem.eql(u8, a[2], ")"))
+            return if (a[1].len > 0) 0 else 1;
     }
-    if (args.len == 5 and std.mem.eql(u8, args[1], "!"))
-        return if (testBinary(args[2], args[3], args[4]) == 0) 1 else 0;
-    return 1;
+    if (a.len == 4 and std.mem.eql(u8, a[0], "!")) {
+        const sub = a[1..];
+        if (isBinaryOp(sub[1])) {
+            const r = testBinary(sub[0], sub[1], sub[2]);
+            return if (r == 0) 1 else 0;
+        }
+        if (std.mem.eql(u8, sub[0], "(") and std.mem.eql(u8, sub[2], ")")) {
+            const r: u8 = if (sub[1].len > 0) 0 else 1;
+            return if (r == 0) 1 else 0;
+        }
+    }
+    var pos: usize = 0;
+    return parseExpr(a, &pos);
+}
+
+fn isBinaryOp(s: []const u8) bool {
+    return std.mem.eql(u8, s, "=") or std.mem.eql(u8, s, "==") or
+        std.mem.eql(u8, s, "!=") or
+        std.mem.eql(u8, s, "-eq") or std.mem.eql(u8, s, "-ne") or
+        std.mem.eql(u8, s, "-lt") or std.mem.eql(u8, s, "-le") or
+        std.mem.eql(u8, s, "-gt") or std.mem.eql(u8, s, "-ge");
+}
+
+fn isUnaryOp(s: []const u8) bool {
+    if (s.len != 2 or s[0] != '-') return false;
+    return switch (s[1]) {
+        'z', 'n', 'f', 'd', 'e', 'r', 'w', 'x', 's', 'L', 'h', 'b', 'c', 'g', 'u', 'k', 'p', 't', 'O', 'G' => true,
+        else => false,
+    };
+}
+
+fn parseExpr(args: [][]const u8, pos: *usize) u8 {
+    var result = parseTerm(args, pos);
+    while (pos.* < args.len and std.mem.eql(u8, args[pos.*], "-o")) {
+        pos.* += 1;
+        const rhs = parseTerm(args, pos);
+        result = if (result == 0 or rhs == 0) 0 else 1;
+    }
+    return result;
+}
+
+fn parseTerm(args: [][]const u8, pos: *usize) u8 {
+    var result = parseFactor(args, pos);
+    while (pos.* < args.len and std.mem.eql(u8, args[pos.*], "-a")) {
+        pos.* += 1;
+        const rhs = parseFactor(args, pos);
+        result = if (result == 0 and rhs == 0) 0 else 1;
+    }
+    return result;
+}
+
+fn parseFactor(args: [][]const u8, pos: *usize) u8 {
+    if (pos.* >= args.len) return 1;
+    if (std.mem.eql(u8, args[pos.*], "!")) {
+        if (pos.* + 1 < args.len and
+            !std.mem.eql(u8, args[pos.* + 1], "-a") and
+            !std.mem.eql(u8, args[pos.* + 1], "-o") and
+            !std.mem.eql(u8, args[pos.* + 1], ")"))
+        {
+            pos.* += 1;
+            const r = parseFactor(args, pos);
+            return if (r == 0) 1 else 0;
+        }
+        return parsePrimary(args, pos);
+    }
+    if (std.mem.eql(u8, args[pos.*], "(")) {
+        if (pos.* + 2 < args.len and isBinaryOp(args[pos.* + 1]))
+            return parsePrimary(args, pos);
+        pos.* += 1;
+        const r = parseExpr(args, pos);
+        if (pos.* >= args.len or !std.mem.eql(u8, args[pos.*], ")"))
+            return 1;
+        pos.* += 1;
+        return r;
+    }
+    return parsePrimary(args, pos);
+}
+
+fn parsePrimary(args: [][]const u8, pos: *usize) u8 {
+    if (pos.* + 2 < args.len and isBinaryOp(args[pos.* + 1])) {
+        const r = testBinary(args[pos.*], args[pos.* + 1], args[pos.* + 2]);
+        pos.* += 3;
+        return r;
+    }
+    if (pos.* + 1 < args.len and isUnaryOp(args[pos.*])) {
+        const r = testUnaryOp(args[pos.*], args[pos.* + 1]);
+        pos.* += 2;
+        return r;
+    }
+    const r: u8 = if (args[pos.*].len > 0) 0 else 1;
+    pos.* += 1;
+    return r;
 }
 
 fn testUnary(arg: []const u8) u8 {
@@ -67,7 +163,8 @@ fn testFileOp(path: []const u8, kind: u8) u8 {
 }
 
 fn testBinary(a: []const u8, op: []const u8, b: []const u8) u8 {
-    if (std.mem.eql(u8, op, "==")) return if (std.mem.eql(u8, a, b)) 0 else 1;
+    if (std.mem.eql(u8, op, "=") or std.mem.eql(u8, op, "=="))
+        return if (std.mem.eql(u8, a, b)) 0 else 1;
     if (std.mem.eql(u8, op, "!=")) return if (!std.mem.eql(u8, a, b)) 0 else 1;
     if (std.mem.eql(u8, op, "-eq")) return if (parseInt(a) == parseInt(b)) 0 else 1;
     if (std.mem.eql(u8, op, "-ne")) return if (parseInt(a) != parseInt(b)) 0 else 1;
