@@ -1,6 +1,7 @@
 const std = @import("std");
 const var_store = @import("var.zig");
 const expand = @import("expand.zig");
+const applets = @import("applets.zig");
 const executor = @import("executor.zig");
 
 const c = @cImport({
@@ -103,6 +104,11 @@ pub fn isReservedWord(name: []const u8) bool {
 pub fn run(io: std.Io, name: []const u8, args: [][]const u8) u8 {
     const entry = lookup(name) orelse return 127;
     return entry.handler(io, args);
+}
+
+export fn builtins_lookup(name: [*c]const u8) c_int {
+    const n = std.mem.sliceTo(name, 0);
+    return if (lookup(n) != null) 1 else 0;
 }
 
 // Trap storage
@@ -549,7 +555,7 @@ fn builtinSet(io: std.Io, args: [][]const u8) u8 {
 fn builtinType(io: std.Io, args: [][]const u8) u8 {
     if (args.len < 2) return 0;
     const cmd = args[1];
-    if (lookup(cmd) != null) {
+    if (lookup(cmd)) |_| {
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, cmd) catch {};
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, " is a shell builtin\n") catch {};
         return 0;
@@ -557,6 +563,11 @@ fn builtinType(io: std.Io, args: [][]const u8) u8 {
     if (isReservedWord(cmd)) {
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, cmd) catch {};
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, " is a shell keyword\n") catch {};
+        return 0;
+    }
+    if (applets.lookup(cmd)) |_| {
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, cmd) catch {};
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, " is a shell applet\n") catch {};
         return 0;
     }
     return 1;
