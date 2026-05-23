@@ -5,12 +5,7 @@ const expand = @import("expand.zig");
 const builtins = @import("builtins.zig");
 const applets = @import("applets.zig");
 
-const c = @cImport({
-    @cInclude("sys/stat.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("sys/wait.h");
-});
+const c = @import("cimport.zig").c;
 
 const NodeType = parser.NodeType;
 

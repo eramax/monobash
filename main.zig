@@ -74,9 +74,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Interactive / REPL mode
     var_store.interactive = true;
-    const c_stdio = @cImport({
-        @cInclude("stdio.h");
-    });
+    const c = @import("cimport.zig").c;
 
     var line_buf: [4096]u8 = undefined;
     var last_status: u8 = 0;
@@ -85,7 +83,7 @@ pub fn main(init: std.process.Init) !void {
         const prompt = if (last_status == 0) "monobash$ " else "monobash! ";
         _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), init.io, prompt) catch break;
 
-        if (c_stdio.fgets(&line_buf, @as(c_int, @intCast(line_buf.len)), c_stdio.stdin)) |_| {
+        if (c.fgets(&line_buf, @as(c_int, @intCast(line_buf.len)), c.stdin)) |_| {
             // fgets includes trailing newline and null-terminates
             const raw = std.mem.sliceTo(&line_buf, 0);
             if (raw.len == 0) break;

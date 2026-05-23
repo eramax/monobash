@@ -1,6 +1,5 @@
 const std = @import("std");
 const core = @import("core.zig");
-const mvzr = @import("mvzr");
 
 pub const meta = core.AppletMeta{ .name = "grep", .main = main };
 
@@ -31,30 +30,39 @@ pub fn main(args: [][]const u8) u8 {
     i += 1;
     const files = args[i..];
 
-    var pat_buf: [4096]u8 = undefined;
-    const pat = if (ci) lowerCase(pattern, &pat_buf) else pattern;
-    const re = mvzr.Regex.compile(pat) orelse
+    // Compile C regex
+    var pat_buf: [4096:0]u8 = undefined;
+    if (pattern.len >= pat_buf.len) return core.die(2, "grep: pattern too long\n", .{});
+    @memcpy(pat_buf[0..pattern.len], pattern);
+    pat_buf[pattern.len] = 0;
+
+    var reg_buf: [1024]u8 align(@alignOf(c_int)) = undefined;
+    const regex: *core.c.regex_t = @ptrCast(&reg_buf);
+    var cflags: c_int = core.c.REG_NOSUB | core.c.REG_EXTENDED;
+    if (ci) cflags |= core.c.REG_ICASE;
+    if (core.c.regcomp(regex, &pat_buf, cflags) != 0)
         return core.die(2, "grep: invalid pattern\n", .{});
+    defer core.c.regfree(regex);
 
     var matched: usize = 0;
     var had_err = false;
 
     if (files.len == 0) {
-        matched = grepFile("", 0, &re, invert, do_count, do_lnum, false, ci);
+        matched = grepFile("", 0, regex, invert, do_count, do_lnum, false);
     } else for (files) |f| {
         const fd = core.openReadName(f) orelse {
             core.eprint("grep: {s}: No such file or directory\n", .{f});
             had_err = true;
             continue;
         };
-        matched += grepFile(f, fd, &re, invert, do_count, do_lnum, files.len > 1, ci);
+        matched += grepFile(f, fd, regex, invert, do_count, do_lnum, files.len > 1);
         _ = core.c.close(fd);
     }
 
     return if (matched > 0) 0 else if (had_err) 2 else 1;
 }
 
-fn grepFile(name: []const u8, fd: c_int, re: *const mvzr.Regex, invert: bool, do_count: bool, do_lnum: bool, show_name: bool, ci: bool) usize {
+fn grepFile(name: []const u8, fd: c_int, regex: *core.c.regex_t, invert: bool, do_count: bool, do_lnum: bool, show_name: bool) usize {
     const data = core.readAll(std.heap.page_allocator, fd, 1024 * 1024) catch return 0;
     defer std.heap.page_allocator.free(data);
 
@@ -62,14 +70,16 @@ fn grepFile(name: []const u8, fd: c_int, re: *const mvzr.Regex, invert: bool, do
     var matched: usize = 0;
     var start: usize = 0;
     var out: [65536]u8 = undefined;
-    var low: [65536]u8 = undefined;
 
     while (start < data.len) {
         const end = if (std.mem.indexOfScalar(u8, data[start..], '\n')) |nl| start + nl else data.len;
         lnum += 1;
         const line = data[start..end];
-        const hay = if (ci) lowerCase(line, &low) else line;
-        const is_match = re.match(hay) != null;
+        var zline: [65537:0]u8 = undefined;
+        const n = @min(line.len, zline.len - 1);
+        @memcpy(zline[0..n], line[0..n]);
+        zline[n] = 0;
+        const is_match = core.c.regexec(regex, &zline, 0, null, 0) == 0;
         const show = if (invert) !is_match else is_match;
         if (show) {
             matched += 1;

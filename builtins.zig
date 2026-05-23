@@ -4,13 +4,7 @@ const expand = @import("expand.zig");
 const applets = @import("applets.zig");
 const executor = @import("executor.zig");
 
-const c = @cImport({
-    @cInclude("sys/stat.h");
-    @cInclude("stdio.h");
-    @cInclude("stdlib.h");
-    @cInclude("unistd.h");
-    @cInclude("sys/wait.h");
-});
+const c = @import("cimport.zig").c;
 
 pub const BuiltinEntry = struct {
     name: []const u8,

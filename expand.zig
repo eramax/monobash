@@ -1,10 +1,7 @@
 const std = @import("std");
 const var_store = @import("var.zig");
 
-const c = @cImport({
-    @cInclude("wordexp.h");
-    @cInclude("unistd.h");
-});
+const c = @import("cimport.zig").c;
 
 pub const WordExpError = error{
     OutOfMemory,

@@ -1,9 +1,6 @@
 const std = @import("std");
 const core = @import("applets/core.zig");
-const c = @cImport({
-    @cInclude("unistd.h");
-    @cInclude("sys/wait.h");
-});
+const c = @import("cimport.zig").c;
 
 // Import all applet modules — add new applets here
 const applets = struct {

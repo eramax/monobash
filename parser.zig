@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("tree_sitter/api.h");
-});
+const c = @import("cimport.zig").c;
 
 pub const NodeType = c.TSNode;
 pub const TreeType = c.TSTree;

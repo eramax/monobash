@@ -181,24 +181,5 @@ pub const FileIter = struct {
 
 pub extern "c" var environ: [*c][*c]u8;
 
-pub const c = @cImport({
-    @cInclude("unistd.h");
-    @cInclude("sys/stat.h");
-    @cInclude("sys/utsname.h");
-    @cInclude("sys/wait.h");
-    @cInclude("fcntl.h");
-    @cInclude("pwd.h");
-    @cInclude("grp.h");
-    @cInclude("stdlib.h");
-    @cInclude("stdio.h");
-    @cInclude("signal.h");
-    @cInclude("sys/resource.h");
-    @cInclude("sched.h");
-    @cInclude("sys/file.h");
-    @cInclude("sys/personality.h");
-    @cInclude("dirent.h");
-    @cInclude("errno.h");
-    @cInclude("time.h");
-    @cInclude("sys/statvfs.h");
-    @cInclude("termios.h");
-});
+const cimport = @import("../cimport.zig");
+pub const c = cimport.c;
