@@ -165,6 +165,15 @@ const applets = struct {
     const _vi = @import("applets/vi.zig");
     const _patch = @import("applets/patch.zig");
     const _awk = @import("applets/awk.zig");
+    const _arping = @import("applets/arping.zig");
+    const _ftpd = @import("applets/ftpd.zig");
+    const _httpd = @import("applets/httpd.zig");
+    const _ip = @import("applets/ip.zig");
+    const _netstat = @import("applets/netstat.zig");
+    const _ntpd = @import("applets/ntpd.zig");
+    const _telnet = @import("applets/telnet.zig");
+    const _tftp = @import("applets/tftp.zig");
+    const _traceroute = @import("applets/traceroute.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -343,6 +352,15 @@ const all_metas = &[_]core.AppletMeta{
     applets._vi.meta,
     applets._patch.meta,
     applets._awk.meta,
+    applets._arping.meta,
+    applets._ftpd.meta,
+    applets._httpd.meta,
+    applets._ip.meta,
+    applets._netstat.meta,
+    applets._ntpd.meta,
+    applets._telnet.meta,
+    applets._tftp.meta,
+    applets._traceroute.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {

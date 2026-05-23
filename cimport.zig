@@ -35,4 +35,8 @@ pub const c = @cImport({
     @cInclude("sys/ioctl.h");
     @cInclude("poll.h");
     @cInclude("sys/time.h");
+    @cInclude("netpacket/packet.h");
+    @cInclude("net/if_arp.h");
+    @cInclude("netinet/ip.h");
+    @cInclude("netinet/ip_icmp.h");
 });
