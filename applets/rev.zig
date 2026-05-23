@@ -12,19 +12,23 @@ pub fn main(args: [][]const u8) u8 {
         fd = core.c.open(&fbuf, core.c.O_RDONLY);
         if (fd < 0) return core.die(1, "rev: cannot open '{s}'\n", .{file});
     }
-    defer {
-        if (file.len > 0 and fd > 0) _ = core.c.close(fd);
-    }
     var reader = core.LineReader.init(fd);
     var rbuf: [8192]u8 = undefined;
-    while (reader.next()) |line| {
+    while (reader.nextWithTerminator()) |entry| {
+        var line = entry.line;
+        var terminated = entry.terminated;
+        if (std.mem.indexOfScalar(u8, line, 0)) |nul_pos| {
+            line = line[0..nul_pos];
+            terminated = false;
+        }
         var j: usize = 0;
         while (j < line.len) {
             rbuf[j] = line[line.len - 1 - j];
             j += 1;
         }
         core.writeAll(1, rbuf[0..line.len]);
-        core.writeAll(1, "\n");
+        if (terminated) core.writeAll(1, "\n");
     }
+    if (file.len > 0 and fd > 0) _ = core.c.close(fd);
     return 0;
 }

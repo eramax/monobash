@@ -82,10 +82,20 @@ pub fn uringCounts() UringCounters {
 pub fn readAll(allocator: std.mem.Allocator, fd: c_int, max_size: usize) ![]u8 {
     ensureCounters();
     var buf = try allocator.alloc(u8, max_size);
-    const u = &global_uring.?;
-    if (u.read(fd, buf)) |n| { uring_ctrs.?.read_ok += 1; return buf[0..n]; } else |_| {}
-    uring_ctrs.?.read_fallback += 1;
     var pos: usize = 0;
+    if (global_uring != null) {
+        const u = &global_uring.?;
+        while (pos < max_size) {
+            if (u.read(fd, buf[pos..])) |n| {
+                uring_ctrs.?.read_ok += 1;
+                if (n == 0) break;
+                pos += n;
+            } else |_| break;
+        }
+        if (pos > 0) return buf[0..pos];
+    }
+    uring_ctrs.?.read_fallback += 1;
+    pos = 0;
     while (pos < max_size) {
         const n = c.read(fd, buf.ptr + pos, max_size - pos);
         if (n <= 0) break;
@@ -135,6 +145,43 @@ pub const LineReader = struct {
 
     pub fn init(fd: c_int) LineReader {
         return .{ .buf = undefined, .pos = 0, .end = 0, .fd = fd, .eof = false };
+    }
+
+    pub fn nextWithTerminator(self: *LineReader) ?struct { line: []const u8, terminated: bool } {
+        while (true) {
+            var i = self.pos;
+            while (i < self.end) : (i += 1) {
+                if (self.buf[i] == '\n') {
+                    const line = self.buf[self.pos..i];
+                    self.pos = i + 1;
+                    return .{ .line = line, .terminated = true };
+                }
+            }
+            if (self.eof) {
+                if (self.pos < self.end) {
+                    const line = self.buf[self.pos..self.end];
+                    self.pos = self.end;
+                    return .{ .line = line, .terminated = false };
+                }
+                return null;
+            }
+            if (self.pos > 0) {
+                std.mem.copyForwards(u8, self.buf[0..], self.buf[self.pos..self.end]);
+                self.end -= self.pos;
+                self.pos = 0;
+            }
+            if (self.end >= self.buf.len) {
+                const line = self.buf[0..self.end];
+                self.end = 0;
+                return .{ .line = line, .terminated = false };
+            }
+            const n = c.read(self.fd, @as([*]u8, @ptrCast(&self.buf)) + self.end, self.buf.len - self.end);
+            if (n <= 0) {
+                self.eof = true;
+            } else {
+                self.end += @intCast(n);
+            }
+        }
     }
 
     pub fn next(self: *LineReader) ?[]const u8 {

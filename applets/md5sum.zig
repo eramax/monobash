@@ -122,25 +122,84 @@ fn md5(data: []const u8) [16]u8 {
     return result;
 }
 
-fn hex(buf: []u8, hash: [16]u8) []u8 {
+fn hexHash(hash: [16]u8) [32]u8 {
+    var h: [32]u8 = undefined;
     const hex_chars = "0123456789abcdef";
     for (hash, 0..) |byte, i| {
-        buf[i * 2] = hex_chars[byte >> 4];
-        buf[i * 2 + 1] = hex_chars[byte & 0xF];
+        h[i * 2] = hex_chars[byte >> 4];
+        h[i * 2 + 1] = hex_chars[byte & 0xF];
     }
-    return buf[0..32];
+    return h;
 }
 
 pub fn main(args: [][]const u8) u8 {
     const alloc = std.heap.page_allocator;
-    const files = args[1..];
+    var i: usize = 1;
+    var do_check = false;
+    while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
+        if (std.mem.eql(u8, args[i], "--")) { i += 1; break; }
+        for (args[i][1..]) |c| {
+            if (c == 'c') do_check = true;
+            if (c == 'C') do_check = true;
+        }
+        i += 1;
+    }
+    const files = args[i..];
+
+    if (do_check) {
+        var exit: u8 = 0;
+        var checked: usize = 0;
+        if (files.len == 0) return 1;
+        for (files) |f| {
+            var fbuf: [4096:0]u8 = undefined;
+            if (f.len >= fbuf.len) { exit = 1; continue; }
+            @memcpy(fbuf[0..f.len], f);
+            fbuf[f.len] = 0;
+            const fd = core.c.open(&fbuf, core.c.O_RDONLY);
+            if (fd < 0) { core.eprint("md5sum: {s}: No such file\n", .{f}); exit = 1; continue; }
+            defer _ = core.c.close(fd);
+            const data = core.readAll(alloc, fd, 1024 * 1024 * 16) catch { exit = 1; continue; };
+            defer alloc.free(data);
+            var lines = std.mem.splitScalar(u8, data, '\n');
+            while (lines.next()) |line| {
+                if (line.len < 34) continue;
+                if (line[32] != ' ') continue;
+                const hash_str = line[0..32];
+                var name_start: usize = 33;
+                if (name_start < line.len and (line[name_start] == ' ' or line[name_start] == '*')) name_start += 1;
+                const fname = std.mem.trim(u8, line[name_start..], " \t\r");
+                if (fname.len == 0) continue;
+                checked += 1;
+                var fbuf2: [4096:0]u8 = undefined;
+                if (fname.len >= fbuf2.len) { exit = 1; continue; }
+                @memcpy(fbuf2[0..fname.len], fname);
+                fbuf2[fname.len] = 0;
+                const fd2 = core.c.open(&fbuf2, core.c.O_RDONLY);
+                if (fd2 < 0) { core.eprint("md5sum: {s}: No such file\n", .{fname}); exit = 1; continue; }
+                defer _ = core.c.close(fd2);
+                const fdata = core.readAll(alloc, fd2, 1024 * 1024 * 16) catch { exit = 1; continue; };
+                defer alloc.free(fdata);
+                const hash = md5(fdata);
+                const h = hexHash(hash);
+                if (std.mem.eql(u8, &h, hash_str)) {
+                    core.writeAll(1, fname);
+                    core.writeAll(1, ": OK\n");
+                } else {
+                    core.eprint("md5sum: {s}: FAILED\n", .{fname});
+                    exit = 1;
+                }
+            }
+        }
+        if (checked == 0) return 1;
+        return exit;
+    }
+
     if (files.len == 0) {
         const data = core.readAll(alloc, 0, 1024 * 1024 * 16) catch return 1;
         defer alloc.free(data);
         const hash = md5(data);
-        var hex_buf: [64]u8 = undefined;
-        const h = hex(&hex_buf, hash);
-        core.writeAll(1, h);
+        const h = hexHash(hash);
+        core.writeAll(1, h[0..]);
         core.writeAll(1, "  -\n");
         return 0;
     }
@@ -156,9 +215,8 @@ pub fn main(args: [][]const u8) u8 {
         const data = core.readAll(alloc, fd, 1024 * 1024 * 16) catch { exit = 1; continue; };
         defer alloc.free(data);
         const hash = md5(data);
-        var hex_buf: [64]u8 = undefined;
-        const h = hex(&hex_buf, hash);
-        core.writeAll(1, h);
+        const h = hexHash(hash);
+        core.writeAll(1, h[0..]);
         core.writeAll(1, "  ");
         core.writeAll(1, f);
         core.writeAll(1, "\n");
