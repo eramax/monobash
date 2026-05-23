@@ -159,6 +159,8 @@ const applets = struct {
     const _cmp = @import("applets/cmp.zig");
     const _hexdump = @import("applets/hexdump.zig");
     const _rev = @import("applets/rev.zig");
+    const _uuencode = @import("applets/uuencode.zig");
+    const _xxd = @import("applets/xxd.zig");
     const _cal = @import("applets/cal.zig");
     const _dc = @import("applets/dc.zig");
     const _watch = @import("applets/watch.zig");
@@ -434,6 +436,8 @@ const all_metas = &[_]core.AppletMeta{
     applets._cmp.meta,
     applets._hexdump.meta,
     applets._rev.meta,
+    applets._uuencode.meta,
+    applets._xxd.meta,
     applets._cal.meta,
     applets._dc.meta,
     applets._watch.meta,
