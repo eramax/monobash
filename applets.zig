@@ -9,6 +9,7 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("stdio.h");
     @cInclude("fcntl.h");
+    @cInclude("regex.h");
 });
 
 pub const AppletEntry = struct {
@@ -290,6 +291,138 @@ fn applet_id(argc: c_int, argv: [*c][*c]u8) callconv(.c) c_int {
     return 0;
 }
 
+fn applet_grep(argc: c_int, argv: [*c][*c]u8) callconv(.c) c_int {
+    if (argc < 2) return 1;
+    var i: c_int = 1;
+    var flags: c_int = c.REG_EXTENDED;
+    var invert: bool = false;
+    var count_only: bool = false;
+    var show_lineno: bool = false;
+    var multiple_files: bool = false;
+
+    while (i < argc and argv[@intCast(i)][0] == '-') : (i += 1) {
+        const arg = std.mem.sliceTo(argv[@intCast(i)], 0);
+        if (std.mem.eql(u8, arg, "--")) { i += 1; break; }
+        var j: usize = 1;
+        while (j < arg.len) : (j += 1) {
+            switch (arg[j]) {
+                'i' => flags |= c.REG_ICASE,
+                'v' => invert = true,
+                'c' => count_only = true,
+                'n' => show_lineno = true,
+                'E' => flags |= c.REG_EXTENDED,
+                else => {},
+            }
+        }
+    }
+    if (i >= argc) return 1;
+    const pattern = std.mem.sliceTo(argv[@intCast(i)], 0);
+    i += 1;
+    multiple_files = (argc - i > 1);
+
+    // Use a raw buffer for regex_t (opaque type, ~512 bytes on Linux)
+    var regex_buf: [1024]u8 align(@alignOf(c_int)) = undefined;
+    const regex: *c.regex_t = @ptrCast(&regex_buf);
+    var err: c_int = undefined;
+    {
+        var buf: [4096:0]u8 = undefined;
+        @memcpy(buf[0..pattern.len], pattern);
+        buf[pattern.len] = 0;
+        err = c.regcomp(regex, &buf, @intCast(flags));
+    }
+    if (err != 0) {
+        var errbuf: [256]u8 = undefined;
+        _ = c.regerror(err, regex, &errbuf, errbuf.len);
+        var msg: [512]u8 = undefined;
+        const s = std.fmt.bufPrint(&msg, "grep: {s}\n", .{std.mem.sliceTo(&errbuf, 0)}) catch "grep: error\n";
+        writeAll(2, s);
+        return 2;
+    }
+    defer c.regfree(regex);
+
+    var total_matched: usize = 0;
+
+    if (i >= argc) {
+        total_matched += grepStream(regex, "", 0, invert, count_only, show_lineno, multiple_files);
+    } else {
+        while (i < argc) : (i += 1) {
+            const fname = std.mem.sliceTo(argv[@intCast(i)], 0);
+            var buf: [4096:0]u8 = undefined;
+            @memcpy(buf[0..fname.len], fname);
+            buf[fname.len] = 0;
+            const fd = c.open(&buf, c.O_RDONLY);
+            if (fd < 0) {
+                var msg: [512]u8 = undefined;
+                const s = std.fmt.bufPrint(&msg, "grep: {s}: No such file or directory\n", .{fname}) catch "grep: error\n";
+                writeAll(2, s);
+                continue;
+            }
+            defer _ = c.close(fd);
+            total_matched += grepStream(regex, fname, fd, invert, count_only, show_lineno, multiple_files);
+        }
+    }
+
+    return if (total_matched > 0) 0 else 1;
+}
+
+fn grepStream(regex: *c.regex_t, fname: []const u8, fd: c_int, invert: bool, count_only: bool, show_lineno: bool, multiple_files: bool) usize {
+    var line_buf: [65536]u8 = undefined;
+    var line_pos: usize = 0;
+    var lineno: usize = 0;
+    var matched: usize = 0;
+
+    while (true) {
+        var buf: [1]u8 = undefined;
+        const n = c.read(fd, &buf, 1);
+        if (n <= 0) break;
+        if (buf[0] == '\n' or line_pos >= line_buf.len) {
+            const line = line_buf[0..line_pos];
+            lineno += 1;
+
+            var zline: [65537:0]u8 = undefined;
+            @memcpy(zline[0..line.len], line);
+            zline[line.len] = 0;
+
+            var pmatch: [1]c.regmatch_t = undefined;
+            const match_result = c.regexec(regex, &zline, 1, &pmatch, 0);
+            const is_match = (match_result == 0);
+
+            if (is_match != invert) {
+                matched += 1;
+                if (!count_only) {
+                    if (multiple_files) {
+                        writeAll(1, fname);
+                        writeAll(1, ":");
+                    }
+                    if (show_lineno) {
+                        var lbuf: [32]u8 = undefined;
+                        const ls = std.fmt.bufPrint(&lbuf, "{d}:", .{lineno}) catch "";
+                        writeAll(1, ls);
+                    }
+                    writeAll(1, line);
+                    writeAll(1, "\n");
+                }
+            }
+            line_pos = 0;
+        } else {
+            line_buf[line_pos] = buf[0];
+            line_pos += 1;
+        }
+    }
+
+    if (count_only) {
+        if (multiple_files) {
+            writeAll(1, fname);
+            writeAll(1, ":");
+        }
+        var cbuf: [32]u8 = undefined;
+        const cs = std.fmt.bufPrint(&cbuf, "{d}\n", .{matched}) catch "";
+        writeAll(1, cs);
+    }
+
+    return matched;
+}
+
 fn applet_which(argc: c_int, argv: [*c][*c]u8) callconv(.c) c_int {
     if (argc < 2) return 1;
     var found: c_int = 0;
@@ -360,6 +493,7 @@ const applet_table: []const AppletEntry = &.{
     .{ .name = "whoami",    .mainFn = applet_whoami },
     .{ .name = "groups",    .mainFn = applet_groups },
     .{ .name = "id",        .mainFn = applet_id },
+    .{ .name = "grep",      .mainFn = applet_grep },
     .{ .name = "which",     .mainFn = applet_which },
 };
 
