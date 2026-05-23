@@ -5,6 +5,8 @@ pub fn main(args: [][]const u8) u8 {
     var suppress = [3]bool{ false, false, false };
     var i: usize = 1;
     while (i < args.len and args[i].len > 0 and args[i][0] == '-') {
+        if (std.mem.eql(u8, args[i], "--")) { i += 1; break; }
+        if (args[i].len == 1) break;
         for (args[i][1..]) |c| {
             switch (c) {
                 '1' => suppress[0] = true,
