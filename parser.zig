@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @import("cimport.zig").c;
 
 const maxU32 = std.math.maxInt(u32);
 
@@ -267,6 +268,72 @@ const Token = struct {
     is_assignment: bool,
 };
 
+// Regex-based tokenizer
+const token_pattern =
+    "&&|\\|\\||;;|;&|;;&|" ++
+    ">>|<<|<&|>&|<<-|<<<|>\\||&>|" ++
+    "\\[\\[[ \\t]*|\\]\\]|" ++
+    "\\$\\(\\([^)]*\\)\\)|\\$\\([^)]*\\)|\\$\\{[^}]*\\}|" ++
+    "\\$[a-zA-Z_][a-zA-Z0-9_]*|\\$[?$!#@*0-9-]|" ++
+    "'[^']*'|\"[^\"]*\"|" ++
+    "[0-9]+|" ++
+    "[a-zA-Z_.][a-zA-Z0-9_.]*|" ++
+    "[^]\\\\[;&|<>(){}! ]+|" ++
+    "[][;|&(){}!<>]|" ++
+    ".";
+
+var lex_regex_mem: [512]u8 align(16) = undefined;
+var lex_regex_init: bool = false;
+
+fn initLexer() void {
+    const ret = c.regcomp(@ptrCast(&lex_regex_mem), token_pattern, c.REG_EXTENDED);
+    if (ret != 0) @panic("Failed to compile lexer regex");
+    lex_regex_init = true;
+}
+
+fn deinitLexer() void {
+    if (lex_regex_init) {
+        c.regfree(@ptrCast(&lex_regex_mem));
+        lex_regex_init = false;
+    }
+}
+
+fn classifyToken(text: []const u8) TokenType {
+    if (text.len == 1) return switch (text[0]) {
+        ';' => .SEMICOLON,
+        '|' => .PIPE,
+        '&' => .AMPERSAND,
+        '(' => .LPAREN,
+        ')' => .RPAREN,
+        '{' => .LBRACE,
+        '}' => .RBRACE,
+        '!' => .BANG,
+        '<' => .LESS,
+        '>' => .GREAT,
+        '[' => .LBRACKET,
+        ']' => .RBRACKET,
+        else => .WORD,
+    };
+
+    if (std.mem.eql(u8, text, "&&")) return .AND_IF;
+    if (std.mem.eql(u8, text, "||")) return .OR_IF;
+    if (std.mem.eql(u8, text, ";;")) return .DSEMI;
+    if (std.mem.eql(u8, text, ";&")) return .DSDEMI;
+    if (std.mem.eql(u8, text, ";;&")) return .DSLSEMI;
+    if (std.mem.eql(u8, text, ">>")) return .DGREAT;
+    if (std.mem.eql(u8, text, "<<")) return .DLESS;
+    if (std.mem.eql(u8, text, "<&")) return .LESSAND;
+    if (std.mem.eql(u8, text, ">&")) return .GREATAND;
+    if (std.mem.eql(u8, text, "<<-")) return .DLESSDASH;
+    if (std.mem.eql(u8, text, "<<<")) return .LESSLESS;
+    if (std.mem.eql(u8, text, ">|")) return .CLOBBER;
+    if (std.mem.eql(u8, text, "&>")) return .ANDGREAT;
+    if (std.mem.startsWith(u8, text, "[[")) return .DBL_LBRACKET;
+    if (std.mem.eql(u8, text, "]]")) return .DBL_RBRACKET;
+
+    return .WORD;
+}
+
 const ParserState = struct {
     source: [:0]const u8,
     pos: u32,
@@ -308,14 +375,14 @@ const ParserState = struct {
         const s = self.source;
         while (self.pos < s.len) {
             const start = self.pos;
-            const c = s[self.pos];
+            const ch = s[start];
 
-            if (c == ' ' or c == '\t' or c == '\r') {
+            if (ch == ' ' or ch == '\t' or ch == '\r') {
                 self.pos += 1;
                 continue;
             }
 
-            if (c == '#') {
+            if (ch == '#') {
                 self.pos += 1;
                 while (self.pos < s.len and s[self.pos] != '\n') {
                     self.pos += 1;
@@ -323,326 +390,51 @@ const ParserState = struct {
                 continue;
             }
 
-            if (c == '"' or c == '\'') {
-                const tok = self.lexQuoted(c);
-                return tok;
-            }
-            if (c == '\\') {
-                const tok = self.lexBackslashWord();
-                return tok;
-            }
-            if (c == '$') {
-                const tok = self.lexExpansion();
-                return tok;
-            }
-
-            if (c == '\n') {
+            if (ch == '\n') {
                 self.pos += 1;
                 return .{ .type = .NEWLINE, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
             }
 
-            if (c == ';') {
+            var match: c.regmatch_t = undefined;
+            const ret = c.regexec(@ptrCast(&lex_regex_mem), s.ptr + start, 1, &match, 0);
+            if (ret != 0 or match.rm_so != 0 or match.rm_eo <= 0) {
                 self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == ';') {
-                    self.pos += 1;
-                    if (self.pos < s.len and s[self.pos] == '&') {
-                        self.pos += 1;
-                        return .{ .type = .DSLSEMI, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                    }
-                    return .{ .type = .DSEMI, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                if (self.pos < s.len and s[self.pos] == '&') {
-                    self.pos += 1;
-                    return .{ .type = .DSDEMI, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .SEMICOLON, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
+                continue;
             }
 
-            if (c == '&') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '&') {
-                    self.pos += 1;
-                    return .{ .type = .AND_IF, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
+            const match_len = @as(u32, @intCast(match.rm_eo));
+            self.pos = start + match_len;
+            const text = s[start..self.pos];
+
+            const tok_type = classifyToken(text);
+
+            if (tok_type == .WORD) {
+                if (self.next_is_statement_start and isKeyword(text)) {
+                    return .{ .type = keywordToTokenType(text), .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
                 }
-                if (self.pos < s.len and s[self.pos] == '>') {
-                    self.pos += 1;
-                    return .{ .type = .ANDGREAT, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .AMPERSAND, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
+                return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = isAssignmentWord(text) };
             }
 
-            if (c == '|') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '|') {
-                    self.pos += 1;
-                    return .{ .type = .OR_IF, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .PIPE, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '<') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '<') {
-                    self.pos += 1;
-                    if (self.pos < s.len and s[self.pos] == '<') {
-                        self.pos += 1;
-                        return .{ .type = .LESSLESS, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                    }
-                    if (self.pos < s.len and s[self.pos] == '-') {
-                        self.pos += 1;
-                        return .{ .type = .DLESSDASH, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                    }
-                    return .{ .type = .DLESS, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                if (self.pos < s.len and s[self.pos] == '&') {
-                    self.pos += 1;
-                    return .{ .type = .LESSAND, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                if (self.pos < s.len and s[self.pos] == '>') {
-                    self.pos += 1;
-                    return .{ .type = .LESS, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .LESS, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '>') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '>') {
-                    self.pos += 1;
-                    return .{ .type = .DGREAT, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                if (self.pos < s.len and s[self.pos] == '&') {
-                    self.pos += 1;
-                    return .{ .type = .GREATAND, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                if (self.pos < s.len and s[self.pos] == '|') {
-                    self.pos += 1;
-                    return .{ .type = .CLOBBER, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .GREAT, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '(') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '(') {
-                    self.pos += 1;
-                    return .{ .type = .DBL_LPAREN, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .LPAREN, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == ')') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == ')') {
-                    self.pos += 1;
-                    return .{ .type = .DBL_RPAREN, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .RPAREN, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '[') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == '[') {
-                    self.pos += 1;
-                    while (self.pos < s.len and (s[self.pos] == ' ' or s[self.pos] == '\t')) {
-                        self.pos += 1;
-                    }
-                    return .{ .type = .DBL_LBRACKET, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .LBRACKET, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == ']') {
-                self.pos += 1;
-                if (self.pos < s.len and s[self.pos] == ']') {
-                    self.pos += 1;
-                    return .{ .type = .DBL_RBRACKET, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-                }
-                return .{ .type = .RBRACKET, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '{') {
-                self.pos += 1;
-                return .{ .type = .LBRACE, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '}') {
-                self.pos += 1;
-                return .{ .type = .RBRACE, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            if (c == '!') {
-                self.pos += 1;
-                return .{ .type = .BANG, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-            }
-
-            return self.lexWord(start);
+            return .{ .type = tok_type, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
         }
 
         return .{ .type = .EOF, .start = @intCast(self.pos), .end = @intCast(self.pos), .is_assignment = false };
     }
-
-    fn lexQuoted(self: *ParserState, quote: u8) Token {
-        const start = self.pos;
-        self.pos += 1;
-        const is_double = (quote == '"');
-        while (self.pos < self.source.len) {
-            if (self.source[self.pos] == '\\' and is_double and self.pos + 1 < self.source.len and
-                (self.source[self.pos + 1] == '"' or self.source[self.pos + 1] == '\\' or
-                 self.source[self.pos + 1] == '$' or self.source[self.pos + 1] == '\n'))
-            {
-                self.pos += 2;
-                continue;
-            }
-            if (self.source[self.pos] == '\\' and !is_double) {
-                self.pos += 1;
-                if (self.pos < self.source.len) self.pos += 1;
-                continue;
-            }
-            if (is_double and self.source[self.pos] == '$') {
-                const sub = self.lexExpansion();
-                _ = sub;
-                continue;
-            }
-            if (self.source[self.pos] == '`' and is_double) {
-                self.pos += 1;
-                while (self.pos < self.source.len and self.source[self.pos] != '`') {
-                    if (self.source[self.pos] == '\\' and self.pos + 1 < self.source.len) self.pos += 1;
-                    self.pos += 1;
-                }
-                if (self.pos < self.source.len) self.pos += 1;
-                continue;
-            }
-            if (self.source[self.pos] == quote) {
-                self.pos += 1;
-                break;
-            }
-            if (self.source[self.pos] == '\n' and !is_double) {
-                break;
-            }
-            self.pos += 1;
-        }
-        return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-    }
-
-    fn lexBackslashWord(self: *ParserState) Token {
-        const start = self.pos;
-        self.pos += 1;
-        if (self.pos < self.source.len) self.pos += 1;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
-            if (isWordBreak(c)) break;
-            self.pos += 1;
-        }
-        return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-    }
-
-    fn lexExpansion(self: *ParserState) Token {
-        const start = self.pos;
-        self.pos += 1;
-        if (self.pos < self.source.len and self.source[self.pos] == '{') {
-            var depth: u32 = 1;
-            self.pos += 1;
-            while (self.pos < self.source.len and depth > 0) {
-                if (self.source[self.pos] == '{') depth += 1;
-                if (self.source[self.pos] == '}') depth -= 1;
-                self.pos += 1;
-            }
-            return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-        }
-        if (self.pos < self.source.len and self.source[self.pos] == '(') {
-            if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '(') {
-                self.pos += 2;
-                var depth: u32 = 2;
-                while (self.pos < self.source.len and depth > 0) {
-                    if (self.source[self.pos] == '(') depth += 1;
-                    if (self.source[self.pos] == ')') depth -= 1;
-                    self.pos += 1;
-                }
-            } else {
-                self.pos += 1;
-                var depth: u32 = 1;
-                while (self.pos < self.source.len and depth > 0) {
-                    if (self.source[self.pos] == '(') depth += 1;
-                    if (self.source[self.pos] == ')') depth -= 1;
-                    if (self.source[self.pos] == '\\' and self.pos + 1 < self.source.len) self.pos += 1;
-                    self.pos += 1;
-                }
-            }
-            return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-        }
-        if (self.pos < self.source.len and (std.ascii.isAlphanumeric(self.source[self.pos]) or self.source[self.pos] == '_')) {
-            while (self.pos < self.source.len and (std.ascii.isAlphanumeric(self.source[self.pos]) or self.source[self.pos] == '_')) {
-                self.pos += 1;
-            }
-        } else {
-            if (self.pos < self.source.len) self.pos += 1;
-        }
-        return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-    }
-
-    fn lexWord(self: *ParserState, start: u32) Token {
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
-            if (c == '\\') {
-                self.pos += 1;
-                if (self.pos < self.source.len) self.pos += 1;
-                continue;
-            }
-            if (c == '"' or c == '\'') {
-                const sub = self.lexQuoted(c);
-                _ = sub;
-                continue;
-            }
-            if (c == '$') {
-                const sub = self.lexExpansion();
-                _ = sub;
-                continue;
-            }
-            if (c == '`') {
-                self.pos += 1;
-                while (self.pos < self.source.len and self.source[self.pos] != '`') {
-                    if (self.source[self.pos] == '\\' and self.pos + 1 < self.source.len) self.pos += 1;
-                    self.pos += 1;
-                }
-                if (self.pos < self.source.len) self.pos += 1;
-                continue;
-            }
-            if (isWordBreak(c)) break;
-            self.pos += 1;
-        }
-
-        const text = self.source[start..self.pos];
-        const is_assignment = isAssignmentWord(text);
-
-        if (self.next_is_statement_start and isKeyword(text)) {
-            return .{ .type = keywordToTokenType(text), .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = false };
-        }
-
-        return .{ .type = .WORD, .start = @intCast(start), .end = @intCast(self.pos), .is_assignment = is_assignment };
-    }
 };
-
-fn isWordBreak(c: u8) bool {
-    return switch (c) {
-        ' ', '\t', '\n', '\r', '#', ';', '&', '|', '<', '>', '(', ')', '{', '}', '[', ']', '!', '\\' => true,
-        else => false,
-    };
-}
 
 fn isAssignmentWord(text: []const u8) bool {
     if (text.len == 0) return false;
     if (text[0] >= '0' and text[0] <= '9') return false;
     var eq_pos: ?usize = null;
-    for (text, 0..) |c, i| {
-        if (c == '=') {
+    for (text, 0..) |ch, i| {
+        if (ch == '=') {
             if (i > 0) eq_pos = i;
             break;
         }
         if (i == 0) {
-            if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_')) return false;
+            if (!((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or ch == '_')) return false;
         } else {
-            if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')) return false;
+            if (!((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_')) return false;
         }
     }
     return eq_pos != null;
@@ -684,17 +476,17 @@ fn keywordToTokenType(text: []const u8) TokenType {
 
 fn isAllDigits(text: []const u8) bool {
     if (text.len == 0) return false;
-    for (text) |c| {
-        if (c < '0' or c > '9') return false;
+    for (text) |ch| {
+        if (ch < '0' or ch > '9') return false;
     }
     return true;
 }
 
 fn isNumber(text: []const u8) bool {
     if (text.len == 0) return false;
-    for (text, 0..) |c, i| {
-        if (i == 0 and c == '-') continue;
-        if (c < '0' or c > '9') return false;
+    for (text, 0..) |ch, i| {
+        if (i == 0 and ch == '-') continue;
+        if (ch < '0' or ch > '9') return false;
     }
     return true;
 }
@@ -817,64 +609,17 @@ fn parseStatement(ps: *ParserState) u32 {
         return maxU32;
     }
 
-    // Check for compound commands that start with keywords
-    if (tok.type == .LBRACE) return parseBraceGroup(ps);
-    if (tok.type == .LPAREN) return parseSubshell(ps);
-    if (tok.type == .DBL_LPAREN) return parseArithCmd(ps);
-    if (tok.type == .DBL_LBRACKET) return parseTestCommand(ps);
-    if (tok.type == .IF) return parseIf(ps);
-    if (tok.type == .FOR) return parseFor(ps);
-    if (tok.type == .WHILE or tok.type == .UNTIL) return parseWhile(ps);
-    if (tok.type == .CASE) return parseCase(ps);
-    if (tok.type == .FUNCTION) return parseFunctionDef(ps);
-
-    if (tok.type == .WORD) {
-        const text = ps.tokText(tok);
-        if (std.mem.eql(u8, text, "declare") or std.mem.eql(u8, text, "typeset") or
-            std.mem.eql(u8, text, "local") or std.mem.eql(u8, text, "export") or
-            std.mem.eql(u8, text, "readonly"))
-        {
-            return parseDeclaration(ps);
-        }
-        if (std.mem.eql(u8, text, "unset")) {
-            return parseUnset(ps);
-        }
-        // Check for function definition: name() { ... }
-        // Look at source bytes directly to check for () after the word
-        var check_pos = ps.tok.end;
-        while (check_pos < ps.source.len and (ps.source[check_pos] == ' ' or ps.source[check_pos] == '\t')) {
-            check_pos += 1;
-        }
-        if (check_pos + 1 < ps.source.len and ps.source[check_pos] == '(' and ps.source[check_pos + 1] == ')') {
-            return parseFunctionDefWithoutKeyword(ps);
-        }
-    }
-
-    if (tok.type == .BANG) {
-        ps.nextTok();
-        const cmd_id = parseCommand(ps);
-        if (cmd_id == maxU32) return maxU32;
-        const neg_id = ps.tree.addNode("negated_command", tok.start, ps.tree.getData(cmd_id).end_byte, true, null);
-        ps.tree.setChildLink(neg_id, cmd_id);
-        return neg_id;
-    }
-
-    // Parse simple command, then check for && / || / |
-    const result_id = parseCommand(ps);
+    // Parse the initial command (compound or simple)
+    const result_id = parseCommandOrCompound(ps);
     if (result_id == maxU32) return maxU32;
 
-    // Handle && and ||
+    // Handle && and || for ALL command types (compound, simple, negated)
     if (ps.tok.type == .AND_IF or ps.tok.type == .OR_IF) {
         const first_start = ps.tree.getData(result_id).start_byte;
         var list_end = ps.tree.getData(result_id).end_byte;
         const list_id = ps.tree.addNode("list", first_start, 0, true, null);
 
         // Adopt the first command as first child
-        // We need to unlink it from its parent (program) and re-link under list
-        // Since parseProgram will setChildLink to program after we return,
-        // we need to set up the internal links correctly.
-        // Actually, setChildLink just appends. So let's manually set up the list children.
-        // Reset the parent of result_id and set it as first_child of list
         ps.tree.nodes.items[result_id].parent = list_id;
         if (ps.tree.getData(list_id).first_child == maxU32) {
             ps.tree.nodes.items[list_id].first_child = result_id;
@@ -919,6 +664,55 @@ fn parseStatement(ps: *ParserState) u32 {
     }
 
     return result_id;
+}
+
+fn parseCommandOrCompound(ps: *ParserState) u32 {
+    const tok = ps.tok;
+
+    // Check for compound commands that start with keywords
+    if (tok.type == .LBRACE) return parseBraceGroup(ps);
+    if (tok.type == .LPAREN) return parseSubshell(ps);
+    if (tok.type == .DBL_LPAREN) return parseArithCmd(ps);
+    if (tok.type == .DBL_LBRACKET) return parseTestCommand(ps);
+    if (tok.type == .IF) return parseIf(ps);
+    if (tok.type == .FOR) return parseFor(ps);
+    if (tok.type == .WHILE or tok.type == .UNTIL) return parseWhile(ps);
+    if (tok.type == .CASE) return parseCase(ps);
+    if (tok.type == .FUNCTION) return parseFunctionDef(ps);
+
+    if (tok.type == .WORD) {
+        const text = ps.tokText(tok);
+        if (std.mem.eql(u8, text, "declare") or std.mem.eql(u8, text, "typeset") or
+            std.mem.eql(u8, text, "local") or std.mem.eql(u8, text, "export") or
+            std.mem.eql(u8, text, "readonly"))
+        {
+            return parseDeclaration(ps);
+        }
+        if (std.mem.eql(u8, text, "unset")) {
+            return parseUnset(ps);
+        }
+        // Check for function definition: name() { ... }
+        // Look at source bytes directly to check for () after the word
+        var check_pos = ps.tok.end;
+        while (check_pos < ps.source.len and (ps.source[check_pos] == ' ' or ps.source[check_pos] == '\t')) {
+            check_pos += 1;
+        }
+        if (check_pos + 1 < ps.source.len and ps.source[check_pos] == '(' and ps.source[check_pos + 1] == ')') {
+            return parseFunctionDefWithoutKeyword(ps);
+        }
+    }
+
+    if (tok.type == .BANG) {
+        ps.nextTok();
+        const cmd_id = parseCommand(ps);
+        if (cmd_id == maxU32) return maxU32;
+        const neg_id = ps.tree.addNode("negated_command", tok.start, ps.tree.getData(cmd_id).end_byte, true, null);
+        ps.tree.setChildLink(neg_id, cmd_id);
+        return neg_id;
+    }
+
+    // Parse simple command
+    return parseCommand(ps);
 }
 
 fn parseCommand(ps: *ParserState) u32 {
@@ -1275,7 +1069,48 @@ fn parseTestCommand(ps: *ParserState) u32 {
 fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_idx: usize) u32 {
     if (start_idx >= end_idx) return maxU32;
 
-    // Handle parentheses
+    // Lowest precedence: || (OR)
+    for (start_idx..end_idx) |i| {
+        if (tokens[i].type == .OR_IF) {
+            const left_id = buildTestExpr(ps, tokens, start_idx, i);
+            if (left_id == maxU32) return maxU32;
+            const op_id = ps.tree.addNode("||", tokens[i].start, tokens[i].end, false, null);
+            const right_id = buildTestExpr(ps, tokens, i + 1, end_idx);
+            if (right_id == maxU32) return maxU32;
+            const bin_id = ps.tree.addNode("binary_expression",
+                ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
+            ps.tree.setChildLink(bin_id, left_id);
+            ps.tree.setChildLink(bin_id, op_id);
+            ps.tree.setChildLink(bin_id, right_id);
+            return bin_id;
+        }
+    }
+
+    // && (AND) - higher precedence than ||
+    for (start_idx..end_idx) |i| {
+        if (tokens[i].type == .AND_IF) {
+            const left_id = buildTestExpr(ps, tokens, start_idx, i);
+            if (left_id == maxU32) return maxU32;
+            const op_id = ps.tree.addNode("&&", tokens[i].start, tokens[i].end, false, null);
+            const right_id = buildTestExpr(ps, tokens, i + 1, end_idx);
+            if (right_id == maxU32) return maxU32;
+            const bin_id = ps.tree.addNode("binary_expression",
+                ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
+            ps.tree.setChildLink(bin_id, left_id);
+            ps.tree.setChildLink(bin_id, op_id);
+            ps.tree.setChildLink(bin_id, right_id);
+            return bin_id;
+        }
+    }
+
+    // No logical operators - parse as a primary expression
+    return buildTestPrimary(ps, tokens, start_idx, end_idx);
+}
+
+fn buildTestPrimary(ps: *ParserState, tokens: []const Token, start_idx: usize, end_idx: usize) u32 {
+    if (start_idx >= end_idx) return maxU32;
+
+    // Handle parenthesized expression
     if (tokens[start_idx].type == .LPAREN) {
         var depth: u32 = 1;
         var i = start_idx + 1;
@@ -1289,12 +1124,6 @@ fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_
                     const paren_id = ps.tree.addNode("parenthesized_expression",
                         tokens[start_idx].start, tokens[i].end, true, null);
                     ps.tree.setChildLink(paren_id, inner_id);
-                    if (i + 1 < end_idx) {
-                        const next_id = buildTestExpr(ps, tokens, i + 1, end_idx);
-                        if (next_id != maxU32) {
-                            return buildBinaryExpr(ps, tokens, paren_id, i + 1, end_idx);
-                        }
-                    }
                     return paren_id;
                 }
             }
@@ -1302,13 +1131,35 @@ fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_
         }
     }
 
-    // Check for unary operators
+    // Handle unary ! (negation) - binds to the next primary
+    // But NOT if followed by = (that's != binary operator)
+    if (start_idx < end_idx) {
+        const first_text = tokText(ps.source, tokens[start_idx]);
+        if (std.mem.eql(u8, first_text, "!")) {
+            const is_neq = start_idx + 1 < end_idx and
+                tokens[start_idx + 1].type == .WORD and
+                std.mem.eql(u8, tokText(ps.source, tokens[start_idx + 1]), "=");
+            if (!is_neq) {
+                const op_token = tokens[start_idx];
+                const op_id = ps.tree.addNode(first_text, op_token.start, op_token.end, false, null);
+                const operand_id = buildTestPrimary(ps, tokens, start_idx + 1, end_idx);
+                if (operand_id == maxU32) return maxU32;
+                const unary_id = ps.tree.addNode("unary_expression",
+                    tokens[start_idx].start, ps.tree.getData(operand_id).end_byte, true, null);
+                ps.tree.setChildLink(unary_id, op_id);
+                ps.tree.setChildLink(unary_id, operand_id);
+                return unary_id;
+            }
+        }
+    }
+
+    // Handle unary test operators (-z, -n, -f, -d, etc.) - these take ONE operand word
     if (start_idx + 1 <= end_idx) {
         const first_text = tokText(ps.source, tokens[start_idx]);
         if (isUnaryOp(first_text)) {
             const op_token = tokens[start_idx];
             const op_id = ps.tree.addNode(first_text, op_token.start, op_token.end, false, null);
-            const operand_id = buildTestExpr(ps, tokens, start_idx + 1, end_idx);
+            const operand_id = buildTestPrimary(ps, tokens, start_idx + 1, end_idx);
             if (operand_id == maxU32) return maxU32;
             const unary_id = ps.tree.addNode("unary_expression",
                 tokens[start_idx].start, ps.tree.getData(operand_id).end_byte, true, null);
@@ -1318,14 +1169,20 @@ fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_
         }
     }
 
-    // Find binary operator
+    // Handle binary comparison operators (==, !=, -eq, -ne, etc.)
+    // These have higher precedence than &&/||, so we only look within this primary
+    // Also handles < (LESS), > (GREAT), and != (BANG + WORD("="))
     for (start_idx..end_idx) |i| {
-        if (tokens[i].type == .AND_IF or tokens[i].type == .OR_IF) {
-            const op_name = if (tokens[i].type == .AND_IF) "&&" else "||";
-            const left_id = buildTestExpr(ps, tokens, start_idx, i);
+        // Check for != (lexed as BANG + WORD "=")
+        if (tokens[i].type == .BANG and i + 1 < end_idx and
+            tokens[i + 1].type == .WORD and
+            std.mem.eql(u8, tokText(ps.source, tokens[i + 1]), "="))
+        {
+            const left_id = buildTestPrimary(ps, tokens, start_idx, i);
             if (left_id == maxU32) return maxU32;
-            const op_id = ps.tree.addNode(op_name, tokens[i].start, tokens[i].end, false, null);
-            const right_id = buildTestExpr(ps, tokens, i + 1, end_idx);
+            const op_text = "!=";
+            const op_id = ps.tree.addNode(op_text, tokens[i].start, tokens[i + 1].end, false, null);
+            const right_id = buildTestPrimary(ps, tokens, i + 2, end_idx);
             if (right_id == maxU32) return maxU32;
             const bin_id = ps.tree.addNode("binary_expression",
                 ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
@@ -1334,13 +1191,46 @@ fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_
             ps.tree.setChildLink(bin_id, right_id);
             return bin_id;
         }
+
+        // Check for < (lexed as LESS)
+        if (tokens[i].type == .LESS) {
+            const left_id = buildTestPrimary(ps, tokens, start_idx, i);
+            if (left_id == maxU32) return maxU32;
+            const op_id = ps.tree.addNode("<", tokens[i].start, tokens[i].end, false, null);
+            const right_id = buildTestPrimary(ps, tokens, i + 1, end_idx);
+            if (right_id == maxU32) return maxU32;
+            const bin_id = ps.tree.addNode("binary_expression",
+                ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
+            ps.tree.setChildLink(bin_id, left_id);
+            ps.tree.setChildLink(bin_id, op_id);
+            ps.tree.setChildLink(bin_id, right_id);
+            return bin_id;
+        }
+
+        // Check for > (lexed as GREAT)
+        if (tokens[i].type == .GREAT) {
+            const left_id = buildTestPrimary(ps, tokens, start_idx, i);
+            if (left_id == maxU32) return maxU32;
+            const op_id = ps.tree.addNode(">", tokens[i].start, tokens[i].end, false, null);
+            const right_id = buildTestPrimary(ps, tokens, i + 1, end_idx);
+            if (right_id == maxU32) return maxU32;
+            const bin_id = ps.tree.addNode("binary_expression",
+                ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
+            ps.tree.setChildLink(bin_id, left_id);
+            ps.tree.setChildLink(bin_id, op_id);
+            ps.tree.setChildLink(bin_id, right_id);
+            return bin_id;
+        }
+
+        // Check for WORD-based binary operators (==, -eq, etc.)
         if (tokens[i].type == .WORD) {
             const txt = tokText(ps.source, tokens[i]);
             if (isBinaryOp(txt)) {
-                const left_id = buildTestExpr(ps, tokens, start_idx, i);
+                const op_token = tokens[i];
+                const left_id = buildTestPrimary(ps, tokens, start_idx, i);
                 if (left_id == maxU32) return maxU32;
-                const op_id = ps.tree.addNode(txt, tokens[i].start, tokens[i].end, false, null);
-                const right_id = buildTestExpr(ps, tokens, i + 1, end_idx);
+                const op_id = ps.tree.addNode(txt, op_token.start, op_token.end, false, null);
+                const right_id = buildTestPrimary(ps, tokens, i + 1, end_idx);
                 if (right_id == maxU32) return maxU32;
                 const bin_id = ps.tree.addNode("binary_expression",
                     ps.tree.getData(left_id).start_byte, ps.tree.getData(right_id).end_byte, true, null);
@@ -1354,14 +1244,6 @@ fn buildTestExpr(ps: *ParserState, tokens: []const Token, start_idx: usize, end_
 
     // Single operand - make a word node
     return makeWordNode(ps, tokens[start_idx]);
-}
-
-fn buildBinaryExpr(_ps: *ParserState, _tokens: []const Token, left_id: u32, _start_idx: usize, _end_idx: usize) u32 {
-    _ = _ps;
-    _ = _tokens;
-    _ = _start_idx;
-    _ = _end_idx;
-    return left_id;
 }
 
 fn isUnaryOp(text: []const u8) bool {
@@ -2078,9 +1960,13 @@ fn parseUnset(ps: *ParserState) u32 {
 
 var global_allocator: std.mem.Allocator = undefined;
 
-pub fn init() void {}
+pub fn init() void {
+    initLexer();
+}
 
-pub fn deinit() void {}
+pub fn deinit() void {
+    deinitLexer();
+}
 
 pub fn parseString(source: [:0]const u8) ?*TreeType {
     const allocator = std.heap.page_allocator;
