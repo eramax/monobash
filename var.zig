@@ -671,3 +671,18 @@ pub fn getSpecial(ch: u8) []const u8 {
         },
     }
 }
+
+pub fn setupHistory(_: std.mem.Allocator) void {
+    if (get("HISTSIZE") == null) {
+        _ = set("HISTSIZE", "1000", false);
+    }
+    if (get("HISTFILE") == null) {
+        const home = if (get("HOME")) |h| h.value else "/root";
+        var hf: [4096]u8 = undefined;
+        const histfile = std.fmt.bufPrint(&hf, "{s}/.bash_history", .{home}) catch return;
+        _ = set("HISTFILE", histfile, false);
+    }
+    if (get("HISTFILESIZE") == null) {
+        _ = set("HISTFILESIZE", "1000", false);
+    }
+}

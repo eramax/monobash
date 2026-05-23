@@ -1456,7 +1456,20 @@ fn builtinPopd(io: std.Io, args: [][]const u8) u8 {
 }
 
 fn builtinEnable(_: std.Io, _: [][]const u8) u8 { return 0; }
-fn builtinFc(_: std.Io, _: [][]const u8) u8 { return 0; }
+fn builtinFc(io: std.Io, args: [][]const u8) u8 {
+    const history_mod = @import("history.zig");
+    const hist = history_mod.instance orelse return 0;
+    _ = args;
+    var buf: [16]u8 = undefined;
+    var i: usize = 0;
+    while (i < hist.count) {
+        const line = hist.lines[i % hist.max];
+        const s = std.fmt.bufPrint(&buf, "{d:>5}  {s}\n", .{i + 1, line}) catch "";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, s) catch return 1;
+        i += 1;
+    }
+    return 0;
+}
 fn builtinGetopts(_: std.Io, _: [][]const u8) u8 { return 1; }
 
 fn builtinHash(io: std.Io, _: [][]const u8) u8 {
@@ -1485,9 +1498,39 @@ fn builtinHelp(io: std.Io, args: [][]const u8) u8 {
     return 0;
 }
 
-fn builtinHistory(io: std.Io, _: [][]const u8) u8 {
-    // Non-interactive: just return success
-    _ = io;
+fn builtinHistory(io: std.Io, args: [][]const u8) u8 {
+    const history_mod = @import("history.zig");
+    const hist = history_mod.instance orelse return 0;
+
+    var i: usize = 0;
+    if (args.len > 1 and std.mem.eql(u8, args[1], "-c")) {
+        hist.count = 0;
+        hist.current_idx = 0;
+        return 0;
+    }
+    if (args.len > 2 and std.mem.eql(u8, args[1], "-d")) {
+        const n = std.fmt.parseUnsigned(usize, args[2], 10) catch return 1;
+        if (n > 0 and n <= hist.count) {
+            var j = n - 1;
+            while (j < hist.count - 1) {
+                hist.lines[j % hist.max] = hist.lines[(j + 1) % hist.max];
+                j += 1;
+            }
+            hist.count -= 1;
+            if (hist.current_idx > hist.count) hist.current_idx = hist.count;
+        }
+        return 0;
+    }
+
+    var buf: [32]u8 = undefined;
+    const start = if (hist.count > hist.max) hist.count - hist.max else 0;
+    i = start;
+    while (i < hist.count) {
+        const line = hist.lines[i % hist.max];
+        const s = std.fmt.bufPrint(&buf, "{d:>5}  {s}\n", .{i + 1, line}) catch "";
+        _ = std.Io.File.writeStreamingAll(std.Io.File.stdout(), io, s) catch return 1;
+        i += 1;
+    }
     return 0;
 }
 
