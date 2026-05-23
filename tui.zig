@@ -79,6 +79,7 @@ pub fn readLine(arena: std.mem.Allocator, history: *history_mod.History, prompt:
                 if (len == 0) {
                     _ = c.write(c.STDOUT_FILENO, "\r\n", 2);
                     eof = true;
+                    break;
                 }
             },
             8, 127 => {
