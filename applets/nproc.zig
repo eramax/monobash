@@ -6,6 +6,6 @@ pub fn main(_: [][]const u8) u8 {
     if (n <= 0) return 1;
     var buf: [32]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}\n", .{@as(u64, @intCast(n))}) catch return 1;
-    _ = core.c.write(1, s.ptr, s.len);
+    core.writeAll(1, s);
     return 0;
 }

@@ -46,9 +46,8 @@ pub fn main(args: [][]const u8) u8 {
                     }
                     const remaining = st - written;
                     const to_write = @min(randbuf.len, @as(usize, @intCast(remaining)));
-                    const n = core.c.write(fd, &randbuf, to_write);
-                    if (n < 0) break;
-                    written += @as(i64, @intCast(n));
+                    core.writeAll(fd, randbuf[0..to_write]);
+                    written += @as(i64, @intCast(to_write));
                 }
             }
         }

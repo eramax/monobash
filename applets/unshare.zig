@@ -45,7 +45,7 @@ pub fn main(args: [][]const u8) u8 {
     if (pid == 0) {
         // Child: unshare and exec
         if (core.c.unshare(@as(c_int, @intCast(flags))) < 0) {
-            _ = core.c.write(2, "unshare: failed\n", 16);
+            core.writeAll(2, "unshare: failed\n");
             core.c._exit(1);
         }
 
@@ -58,17 +58,17 @@ pub fn main(args: [][]const u8) u8 {
 
             const uid_fd = core.c.open("/proc/self/uid_map", core.c.O_WRONLY);
             if (uid_fd >= 0) {
-                _ = core.c.write(uid_fd, uid_str.ptr, uid_str.len);
+                core.writeAll(uid_fd, uid_str);
                 _ = core.c.close(uid_fd);
             }
             const setgroups_fd = core.c.open("/proc/self/setgroups", core.c.O_WRONLY);
             if (setgroups_fd >= 0) {
-                _ = core.c.write(setgroups_fd, "deny", 4);
+                core.writeAll(setgroups_fd, "deny");
                 _ = core.c.close(setgroups_fd);
             }
             const gid_fd = core.c.open("/proc/self/gid_map", core.c.O_WRONLY);
             if (gid_fd >= 0) {
-                _ = core.c.write(gid_fd, gid_str.ptr, gid_str.len);
+                core.writeAll(gid_fd, gid_str);
                 _ = core.c.close(gid_fd);
             }
         }

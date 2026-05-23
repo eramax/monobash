@@ -47,8 +47,13 @@ pub fn main(args: [][]const u8) u8 {
         }
         defer _ = core.c.close(fd);
 
-        var status_data: [20]u8 = undefined;
-        const n = core.c.read(fd, @as([*c]u8, @ptrCast(&status_data)), status_data.len);
+        const status_data = core.readAll(alloc, fd, 20) catch {
+            core.writeAll(1, svc);
+            core.writeAll(1, ": unknown\n");
+            return 0;
+        };
+        defer alloc.free(status_data);
+        const n = status_data.len;
         if (n < 3) {
             core.writeAll(1, svc);
             core.writeAll(1, ": unknown\n");
@@ -94,7 +99,7 @@ pub fn main(args: [][]const u8) u8 {
     defer _ = core.c.close(fd);
 
     const ctrl_byte = [1]u8{ctrl_char};
-    const wrote = core.c.write(fd, @as([*c]u8, @ptrCast(&ctrl_byte)), 1);
+    core.writeAll(fd, ctrl_byte[0..]);
     if (wrote < 0) return core.die(1, "sv: cannot send command to {s}\n", .{svc});
 
     return 0;

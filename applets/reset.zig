@@ -7,15 +7,15 @@ pub fn main(args: [][]const u8) u8 {
     _ = args;
 
     // RIS - full reset
-    _ = core.c.write(1, "\x1bc", 2);
+    core.writeAll(1, "\x1bc");
     // Clear scroll region
-    _ = core.c.write(1, "\x1b[r", 3);
+    core.writeAll(1, "\x1b[r");
     // Reset attributes
-    _ = core.c.write(1, "\x1b[0m", 4);
+    core.writeAll(1, "\x1b[0m");
     // Clear screen
-    _ = core.c.write(1, "\x1b[2J", 4);
+    core.writeAll(1, "\x1b[2J");
     // Cursor home
-    _ = core.c.write(1, "\x1b[H", 3);
+    core.writeAll(1, "\x1b[H");
 
     // Try to reset terminal via termios
     var termios: [60]u8 = undefined; // struct termios is ~60 bytes

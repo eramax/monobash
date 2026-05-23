@@ -10,8 +10,10 @@ const FsInfo = struct {
 };
 
 fn getFsInfo(fd: c_int) FsInfo {
-    var buf: [2048]u8 = undefined;
-    const n = core.c.read(fd, &buf, buf.len);
+    const alloc = std.heap.page_allocator;
+    const buf = core.readAll(alloc, fd, 2048) catch return .{};
+    defer alloc.free(buf);
+    const n = buf.len;
     if (n < 1024) return .{};
 
     // Check ext2/3/4 superblock (at offset 1024, magic at offset 56)

@@ -92,13 +92,13 @@ pub fn main(args: [][]const u8) u8 {
     // Skip input blocks
     if (skip > 0) {
         if (core.c.lseek(in_fd, @as(isize, @intCast(skip * bs)), core.c.SEEK_SET) < 0) {
-            var tmp: [4096]u8 = undefined;
+            const alloc = std.heap.page_allocator;
             var remain = skip * bs;
             while (remain > 0) {
-                const r = @min(remain, tmp.len);
-                const n = core.c.read(in_fd, &tmp, r);
-                if (n <= 0) break;
-                remain -|= @as(usize, @intCast(n));
+                const data = core.readAll(alloc, in_fd, @min(remain, @as(usize, 4096))) catch break;
+                defer alloc.free(data);
+                if (data.len == 0) break;
+                remain -|= data.len;
             }
         }
     }
@@ -108,7 +108,6 @@ pub fn main(args: [][]const u8) u8 {
         _ = core.c.lseek(out_fd, @as(isize, @intCast(seek * bs)), core.c.SEEK_SET);
     }
 
-    var buf: [65536]u8 = undefined;
     var written: usize = 0;
     var blocks: usize = 0;
 
@@ -116,22 +115,15 @@ pub fn main(args: [][]const u8) u8 {
         if (count) |c| {
             if (blocks >= c) break;
         }
-        const to_read = if (bs <= buf.len) bs else buf.len;
-        const n = core.c.read(in_fd, &buf, to_read);
-        if (n <= 0) break;
-        var off: usize = 0;
-        while (off < @as(usize, @intCast(n))) {
-            const w = core.c.write(out_fd, @as([*]u8, @ptrCast(&buf)) + off, @as(usize, @intCast(n)) - off);
-            if (w < 0) {
-                if (in_owned) _ = core.c.close(in_fd);
-                if (out_owned) _ = core.c.close(out_fd);
-                return core.die(1, "dd: write error\n", .{});
-            }
-            off += @intCast(w);
-        }
-        written += @intCast(n);
-        if (@as(usize, @intCast(n)) == to_read) blocks += 1;
-        if (@as(usize, @intCast(n)) < bs) break;
+        const to_read = @min(bs, @as(usize, 65536));
+        const alloc = std.heap.page_allocator;
+        const data = core.readAll(alloc, in_fd, to_read) catch break;
+        defer alloc.free(data);
+        if (data.len == 0) break;
+        core.writeAll(out_fd, data);
+        written += data.len;
+        if (data.len == to_read) blocks += 1;
+        if (data.len < bs) break;
     }
 
     // Report summary to stderr

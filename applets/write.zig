@@ -16,11 +16,11 @@ pub fn main(args: [][]const u8) u8 {
     const fd = core.c.open(&path_buf, core.c.O_WRONLY);
     if (fd < 0) return core.die(1, "write: cannot open tty\n", .{});
     defer _ = core.c.close(fd);
-    var line_buf: [1024]u8 = undefined;
     while (true) {
-        const n = core.c.read(0, &line_buf, line_buf.len);
-        if (n <= 0) break;
-        _ = core.c.write(fd, &line_buf, @intCast(n));
+        const data = core.readAll(std.heap.page_allocator, 0, 1024) catch break;
+        defer std.heap.page_allocator.free(data);
+        if (data.len == 0) break;
+        core.writeAll(fd, data);
     }
     return 0;
 }

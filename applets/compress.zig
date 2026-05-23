@@ -95,19 +95,10 @@ fn compress(in_fd: c_int, out_fd: c_int) u8 {
     }
 
     const magic: [2]u8 = .{ 0x1F, 0x9D };
-    var off: usize = 0;
-    while (off < 2) {
-        const w = core.c.write(out_fd, magic[off..].ptr, 2 - off);
-        if (w < 0) return 1;
-        off += @intCast(w);
-    }
+    core.writeAll(out_fd, magic[0..]);
 
     const maxbits_buf: [1]u8 = .{MAX_BITS};
-    for (0..1) |_| {
-        const w = core.c.write(out_fd, &maxbits_buf, 1);
-        if (w < 0) return 1;
-        break;
-    }
+    core.writeAll(out_fd, maxbits_buf[0..]);
 
     var key_table: [HASH_SIZE]u32 = .{0xFFFFFFFF} ** HASH_SIZE;
     var val_table: [HASH_SIZE]u16 = undefined;
@@ -195,12 +186,7 @@ fn decompress(in_fd: c_int, out_fd: c_int) u8 {
 
     var old_code: u32 = code;
     var out_byte = char_table[@as(usize, @intCast(code))];
-    var w: usize = 0;
-    while (w < 1) {
-        const n = core.c.write(out_fd, @as([*]u8, @ptrCast(&out_byte)) + w, 1 - w);
-        if (n < 0) return 1;
-        w += @intCast(n);
-    }
+    core.writeAll(out_fd, @as(*const [1]u8, @ptrCast(&out_byte))[0..]);
 
     while (true) {
         code = reader.readBits(bits) catch return 1;
@@ -216,12 +202,7 @@ fn decompress(in_fd: c_int, out_fd: c_int) u8 {
             if (code == EOF_CODE) return 0;
             old_code = code;
             out_byte = char_table[@as(usize, @intCast(code))];
-            var woff: usize = 0;
-            while (woff < 1) {
-                const n = core.c.write(out_fd, @as([*]u8, @ptrCast(&out_byte)) + woff, 1 - woff);
-                if (n < 0) return 1;
-                woff += @intCast(n);
-            }
+            core.writeAll(out_fd, @as(*const [1]u8, @ptrCast(&out_byte))[0..]);
             continue;
         }
 
@@ -242,12 +223,7 @@ fn decompress(in_fd: c_int, out_fd: c_int) u8 {
         var si: usize = stack_pos;
         while (si > 0) {
             si -= 1;
-            var woff: usize = 0;
-            while (woff < 1) {
-                const n = core.c.write(out_fd, @as([*]u8, @ptrCast(&stack[si])) + woff, 1 - woff);
-                if (n < 0) return 1;
-                woff += @intCast(n);
-            }
+            core.writeAll(out_fd, @as(*const [1]u8, @ptrCast(&stack[si]))[0..]);
         }
 
         const new_char = stack[stack_pos - 1];

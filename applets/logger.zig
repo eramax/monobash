@@ -10,8 +10,8 @@ pub fn main(args: [][]const u8) u8 {
     defer alloc.free(msg);
     const fd = core.c.open("/dev/kmsg", core.c.O_WRONLY);
     if (fd >= 0) {
-        _ = core.c.write(fd, msg.ptr, msg.len);
-        _ = core.c.write(fd, "\n", 1);
+        core.writeAll(fd, msg);
+        core.writeAll(fd, "\n");
         _ = core.c.close(fd);
         return 0;
     }

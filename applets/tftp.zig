@@ -94,7 +94,7 @@ pub fn main(args: [][]const u8) u8 {
 
         const data_len = @as(usize, @intCast(rn)) - 4;
         if (data_len > 0) {
-            _ = core.c.write(outfd, &pkt[4], data_len);
+            core.writeAll(outfd, pkt[4..][0..data_len]);
             total += data_len;
         }
 

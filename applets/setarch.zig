@@ -4,7 +4,7 @@ pub const meta = core.AppletMeta{ .name = "setarch", .main = main };
 
 pub fn main(args: [][]const u8) u8 {
     if (args.len < 3) return 1;
-    _ = core.c.write(2, "setarch: unsupported, executing anyway\n", 39);
+    core.writeAll(2, "setarch: unsupported, executing anyway\n");
     _ = core.c.personality(core.c.ADDR_NO_RANDOMIZE);
     const alloc = std.heap.page_allocator;
     const c_argv = alloc.alloc([*c]u8, args.len - 2 + 1) catch return 1;
