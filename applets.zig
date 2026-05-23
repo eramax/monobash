@@ -113,6 +113,22 @@ const applets = struct {
     const _base64 = @import("applets/base64.zig");
     const _numfmt = @import("applets/numfmt.zig");
     const _tsort = @import("applets/tsort.zig");
+    const _expr = @import("applets/expr.zig");
+    const _unlink = @import("applets/unlink.zig");
+    const _sync = @import("applets/sync.zig");
+    const _tty = @import("applets/tty.zig");
+    const _mktemp = @import("applets/mktemp.zig");
+    const _basenc = @import("applets/basenc.zig");
+    const _csplit = @import("applets/csplit.zig");
+    const _hostid = @import("applets/hostid.zig");
+    const _pathchk = @import("applets/pathchk.zig");
+    const _stty = @import("applets/stty.zig");
+    const _install = @import("applets/install.zig");
+    const _dircolors = @import("applets/dircolors.zig");
+    const _chcon = @import("applets/chcon.zig");
+    const _runcon = @import("applets/runcon.zig");
+    const _ptx = @import("applets/ptx.zig");
+    const _mknod = @import("applets/mknod.zig");
 };
 
 fn Wrapper(comptime meta: core.AppletMeta) core.AppletEntry {
@@ -236,6 +252,22 @@ const all_metas = &[_]core.AppletMeta{
     applets._base64.meta,
     applets._numfmt.meta,
     applets._tsort.meta,
+    applets._expr.meta,
+    applets._unlink.meta,
+    applets._sync.meta,
+    applets._tty.meta,
+    applets._mktemp.meta,
+    applets._basenc.meta,
+    applets._csplit.meta,
+    applets._hostid.meta,
+    applets._pathchk.meta,
+    applets._stty.meta,
+    applets._install.meta,
+    applets._dircolors.meta,
+    applets._chcon.meta,
+    applets._runcon.meta,
+    applets._ptx.meta,
+    applets._mknod.meta,
 };
 
 pub fn lookup(name: []const u8) ?core.AppletEntry {

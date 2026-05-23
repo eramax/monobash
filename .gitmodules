@@ -1,6 +1,3 @@
-[submodule "deps/coreutils"]
-	path = deps/coreutils
-	url = /mnt/mydata/projects2/0/coreutils
 [submodule "deps/busybox"]
 	path = deps/busybox
 	url = https://github.com/mirror/busybox.git

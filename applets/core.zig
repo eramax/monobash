@@ -200,4 +200,5 @@ pub const c = @cImport({
     @cInclude("errno.h");
     @cInclude("time.h");
     @cInclude("sys/statvfs.h");
+    @cInclude("termios.h");
 });
